@@ -1,0 +1,51 @@
+"""Audit and decode the completed synthetic native cohort, no task scores."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+from transformers import AutoTokenizer
+from native_result_adapter import normalize
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def main():
+    names = {'hf': 'hf0_cohort_smoke_20260910T093410Z_7292f2d4',
+             'kivi_int4': 'kivi4_cohort_smoke_20260910T093433Z_95c55494',
+             'bitdecode_int4': 'bitdecode4_cohort_smoke_20260910T093451Z_6412bbce'}
+    rows, hashes = [], {}
+    for backend, name in names.items():
+        directory = ROOT/'results/mlsys2027_tasks_v1'/name
+        data = {key: json.loads((directory/(key+'.json')).read_text())
+                for key in ('analysis', 'manifest', 'fixtures', 'completion')}
+        if data['completion']['return_code'] or not data['completion']['sampled_exclusivity_passed']:
+            raise ValueError('Incomplete/exclusivity failure')
+        if data['analysis']['model_loads'] != 1:
+            raise ValueError('Unexpected model reload')
+        tokenizer = AutoTokenizer.from_pretrained(data['manifest']['model'], local_files_only=True, trust_remote_code=False)
+        normalized = normalize(data['analysis'], data['fixtures'], backend, tokenizer, 32768, [2])
+        if len(normalized) != 2 or sum(r['fallback'] for r in normalized) != 1:
+            raise ValueError('Synthetic coverage mismatch')
+        bad = copy.deepcopy(data['analysis'])
+        bad['results'][1]['result']['executed_backend'] = 'not_native_hf'
+        try:
+            normalize(bad, data['fixtures'], backend, tokenizer, 32768, [2])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Mislabeled fallback accepted')
+        rows.extend(normalized)
+        for key in data:
+            path = directory/(key+'.json')
+            hashes[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    result = {'passed': True, 'rows': rows, 'input_sha256': hashes,
+              'scope': 'Synthetic serialization/decoding/fallback qualification, not benchmark accuracy.'}
+    target = ROOT/'results/mlsys2027_tasks_v1/native_cohort_qualification.json'
+    with target.open('x') as f:
+        json.dump(result, f, indent=2)
+        f.write('\n')
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == '__main__':
+    main()

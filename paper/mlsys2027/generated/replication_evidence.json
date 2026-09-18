@@ -1,0 +1,28 @@
+{
+  "regional_reference_a0_20260909T035751Z_48404aa1": {
+    "analysis_sha256": "c3f3bcfb65bcb8529ec78744ed54842b570fc47e26caf3a24589814b56760310",
+    "raw_sha256": {
+      "block_0.json": "2f2cb622d47c5bf298cf23dfdce191fb90645ab96c0c48df1774abcdd732a805",
+      "block_1.json": "3a7cb3bfc43a7f2ae7de04664580f1627f47f8a3dd976bf7119aa417ed472d32",
+      "block_2.json": "7902a15df2ae8b640efe162bfee7b0a2f39c4380d7e904e3c24782660d40d655",
+      "block_3.json": "866715d765488c4acdf46fbc87f33f244e99dd66cb3add84c7040f9457383b82",
+      "block_4.json": "1d2b5627801f42ce5db84a8dd6800c3faaa45db54ac0dee055f82d4cde096606",
+      "block_5.json": "3f4e21b18547abbd8386b119e7091b1987a09d785b1f3d44383e7c73f787d897",
+      "block_6.json": "e13cac1aa48965f990a6a65da245b0833f9c18895ef8c1713d570f694d32579a",
+      "block_7.json": "2be4464c463f026b52fa40e79c17aa8b8232a0df0845654c0706a6bfd20a02cb"
+    }
+  },
+  "regional_fi_a0_20260909T053631Z_bcb13816": {
+    "analysis_sha256": "985b3ed3fe579178902d69e730a4c5139b1c75070b01e9c01ef55028e3f09621",
+    "raw_sha256": {
+      "block_0.json": "93b7b0f5ff490b274494bb28bb94e9379d3cf967de19bfd265a01947cee0ed0f",
+      "block_1.json": "e9c3b1afc0aceb6d63ff524160942c6d468bd08008c3f95f6e644cf7d377c644",
+      "block_2.json": "2f950e6abf3b8d049565804ba98698fa4936f33556c9cc7871481116974c5872",
+      "block_3.json": "e592ca6bf6c04e6f605a5d84256d8c15d637b54d2484a96598923728e70b999f",
+      "block_4.json": "2a1ff6212609fa1a50f8bc794adb4feddf0c8a4e6fd66274ce0ddb680c925043",
+      "block_5.json": "7843be8271a2679311250e073a687d779c23e5b297a61a8a9b646354f1bc71c0",
+      "block_6.json": "a63be5ce35abb2e56fc6dd221f266240fd2dc3a40077ff4e77b189f376a2b021",
+      "block_7.json": "793b51fa761f84b0005014c20a89dd3c1470d8a17b891456eafaac5b3ccf38fd"
+    }
+  }
+}

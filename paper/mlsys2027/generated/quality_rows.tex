@@ -1,0 +1,13 @@
+% Generated development evidence; do not edit by hand.
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & PPL & HF PPL & PPL/HF & Descriptive 95\% interval & KV MiB & KV reduction\\\midrule
+FlashInfer FP16 & 5.20421 & 5.20410 & 1.00002 & [0.99997, 1.00008] & 2752.00 & 0.00\% \\
+PageGauge INT8 & 5.20466 & 5.20410 & 1.00011 & [0.99993, 1.00027] & 1737.72 & 36.86\% \\
+KIVI INT4 & 5.20767 & 5.20417 & 1.00067 & [0.99975, 1.00186] & 861.38 & 68.70\% \\
+KIVI INT2 & 5.35293 & 5.20417 & 1.02858 & [1.02312, 1.03493] & 517.62 & 81.19\% \\
+BitDecoding INT4$^*$ & 5.20600 & 5.20417 & 1.00035 & [0.99984, 1.00115] & 876.00 & 68.17\% \\
+NSN unquantized control & 5.20367 & 5.20426 & 0.99988 & [0.99978, 0.99997] & 2752.00 & 0.00\% \\
+NSNQuant INT2 & 5.25094 & 5.20426 & 1.00897 & [1.00724, 1.01109] & 385.17 & 86.00\% \\
+\bottomrule
+\end{tabular}

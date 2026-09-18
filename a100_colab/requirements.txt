@@ -1,0 +1,8 @@
+ninja>=1.11,<2
+flashinfer-python==0.6.17
+transformers==4.57.6
+huggingface-hub==0.36.2
+safetensors==0.8.0
+tokenizers==0.22.2
+accelerate>=1.10,<2
+pytest>=8,<10

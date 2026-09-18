@@ -1,0 +1,251 @@
+--- a/flashinfer/attention/prefill.cuh
++++ b/flashinfer/attention/prefill.cuh
+@@ -50,6 +50,12 @@
+ DEFINE_HAS_MEMBER(maybe_max_item_len_ptr)
+ DEFINE_HAS_MEMBER(maybe_k_cache_sf)
+ DEFINE_HAS_MEMBER(maybe_v_cache_sf)
++DEFINE_HAS_MEMBER(k_affine_bias)
++DEFINE_HAS_MEMBER(k_affine_scale)
++DEFINE_HAS_MEMBER(v_affine_bias)
++DEFINE_HAS_MEMBER(v_affine_scale)
++DEFINE_HAS_MEMBER(k_page_scale)
++DEFINE_HAS_MEMBER(v_page_scale)
+ 
+ // Type trait to detect packed NVFP4 KV cache types (__nv_fp4x2_e2m1 stores 2 FP4 per byte).
+ template <typename T>
+@@ -1127,11 +1133,14 @@
+   }
+ }
+ 
+-template <typename KTraits, bool REPACK_BF16 = false>
++template <typename KTraits, bool REPACK_BF16 = false, bool PAGE_GAUGE = false>
+ __device__ __forceinline__ void compute_qk(
+     smem_t<KTraits::SWIZZLE_MODE_Q>* q_smem, uint32_t* q_smem_offset_r,
+     smem_t<KTraits::SWIZZLE_MODE_KV>* k_smem, uint32_t* k_smem_offset_r, uint8_t* k_sf_smem,
+-    uint32_t lane_idx, typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][8]) {
++    uint32_t lane_idx, typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][8],
++    const half* affine_bias = nullptr, const half* affine_scale = nullptr,
++    const int32_t* affine_page_ids = nullptr, uint32_t affine_kv_head = 0,
++    uint32_t affine_num_kv_heads = 0) {
+   constexpr uint32_t UPCAST_STRIDE_Q = KTraits::UPCAST_STRIDE_Q;
+   constexpr uint32_t UPCAST_STRIDE_K = KTraits::UPCAST_STRIDE_K;
+   // When reading from the BF16 repack buffer, K is laid out as native 16-bit, so
+@@ -1171,6 +1180,23 @@
+         }
+         vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::cast<8>(
+             (typename KTraits::DTypeQ*)b_frag, (typename KTraits::DTypeKV*)b_frag_quant);
++        if constexpr (!PAGE_GAUGE) {
++          if (affine_scale != nullptr) {
++            static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
++            const uint32_t metadata_offset =
++                (static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
++                 affine_kv_head) *
++                    KTraits::NUM_MMA_D_QK +
++                mma_d;
++            const half2 scale2 = __half2half2(affine_scale[metadata_offset]);
++            const half2 bias2 = __half2half2(affine_bias[metadata_offset]);
++#pragma unroll
++            for (uint32_t packed = 0; packed < 4; ++packed) {
++              *reinterpret_cast<half2*>(&b_frag[packed]) =
++                  __hfma2(*reinterpret_cast<half2*>(&b_frag[packed]), scale2, bias2);
++            }
++          }
++        }
+         if constexpr (is_fp4_type_v<typename KTraits::DTypeKV>) {
+           // Apply scaling factors for K.
+           // SF smem is linear: sf[kv_row * SF_COLS + hd_group], SF_COLS = HEAD_DIM_QK/16.
+@@ -1227,6 +1253,23 @@
+                          KTraits::NUM_MMA_KV * 16 * KV_STRIDE;
+     }
+   }
++  if constexpr (PAGE_GAUGE) {
++    static_assert(std::is_same_v<typename KTraits::DTypeQKAccum, float>);
++#pragma unroll
++    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
++      const uint32_t metadata_offset =
++          static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
++          affine_kv_head;
++      const float page_scale = __half2float(affine_scale[metadata_offset]);
++#pragma unroll
++      for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
++#pragma unroll
++        for (uint32_t reg_id = 0; reg_id < 8; ++reg_id) {
++          s_frag[mma_q][mma_kv][reg_id] *= page_scale;
++        }
++      }
++    }
++  }
+   *q_smem_offset_r -= KTraits::NUM_MMA_D_QK * 2;
+   *k_smem_offset_r -= KTraits::NUM_MMA_D_QK * KV_ESIZE;
+ }
+@@ -1629,11 +1672,14 @@
+   }
+ }
+ 
+-template <typename KTraits, bool REPACK_BF16 = false>
++template <typename KTraits, bool REPACK_BF16 = false, bool PAGE_GAUGE = false>
+ __device__ __forceinline__ void compute_sfm_v(
+     smem_t<KTraits::SWIZZLE_MODE_KV>* v_smem, uint32_t* v_smem_offset_r, uint8_t* v_sf_smem,
+     uint32_t lane_idx, typename KTraits::DTypeQKAccum (*s_frag)[KTraits::NUM_MMA_KV][8],
+-    float (*o_frag)[KTraits::NUM_MMA_D_VO_TILE][8], float (*d)[2], const uint32_t d_base = 0) {
++    float (*o_frag)[KTraits::NUM_MMA_D_VO_TILE][8], float (*d)[2], const uint32_t d_base = 0,
++    const half* affine_bias = nullptr, const half* affine_scale = nullptr,
++    const int32_t* affine_page_ids = nullptr, uint32_t affine_kv_head = 0,
++    uint32_t affine_num_kv_heads = 0) {
+   constexpr uint32_t UPCAST_STRIDE_V = KTraits::UPCAST_STRIDE_V;
+   // When reading from the BF16 repack buffer, V is native 16-bit.
+   constexpr uint32_t VV_STRIDE = REPACK_BF16 ? KTraits::REPACK_STRIDE_VO : UPCAST_STRIDE_V;
+@@ -1666,6 +1712,34 @@
+     }
+   }
+ 
++  // For V = scale_page * Z, move the scalar through the matrix product:
++  // P @ V = (scale_page * P) @ Z.  d was accumulated from the unscaled
++  // probabilities above, so only the value contribution is changed.
++  if constexpr (PAGE_GAUGE) {
++    static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
++#pragma unroll
++    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
++      const uint32_t metadata_offset =
++          static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
++          affine_kv_head;
++      const half2 scale2 = __half2half2(affine_scale[metadata_offset]);
++#pragma unroll
++      for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
++#pragma unroll
++        for (uint32_t packed = 0; packed < 4; ++packed) {
++          if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
++            reinterpret_cast<half2*>(s_frag_f16[mma_q][mma_kv])[packed] =
++                __hmul2(reinterpret_cast<half2*>(s_frag_f16[mma_q][mma_kv])[packed],
++                         scale2);
++          } else {
++            reinterpret_cast<half2*>(s_frag[mma_q][mma_kv])[packed] =
++                __hmul2(reinterpret_cast<half2*>(s_frag[mma_q][mma_kv])[packed], scale2);
++          }
++        }
++      }
++    }
++  }
++
+ #pragma unroll
+   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+ #pragma unroll
+@@ -1690,6 +1764,23 @@
+           vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::cast<8>(
+               (typename KTraits::DTypeQ*)b_frag, (typename KTraits::DTypeKV*)b_frag_quant);
+           swap(b_frag[1], b_frag[2]);
++          if constexpr (!PAGE_GAUGE) {
++            if (affine_scale != nullptr) {
++              static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
++              const uint32_t metadata_offset =
++                  (static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
++                   affine_kv_head) *
++                      KTraits::NUM_MMA_D_VO +
++                  mma_d;
++              const half2 scale2 = __half2half2(affine_scale[metadata_offset]);
++              const half2 bias2 = __half2half2(affine_bias[metadata_offset]);
++#pragma unroll
++              for (uint32_t packed = 0; packed < 4; ++packed) {
++                *reinterpret_cast<half2*>(&b_frag[packed]) =
++                    __hfma2(*reinterpret_cast<half2*>(&b_frag[packed]), scale2, bias2);
++              }
++            }
++          }
+           if constexpr (is_fp4_type_v<typename KTraits::DTypeKV>) {
+             // Apply scaling factors for V.
+             // SF smem is linear: sf[kv_row * SF_COLS + hd_group], SF_COLS = HEAD_DIM_VO/16.
+@@ -3832,6 +3923,21 @@
+ 
+         uint32_t kv_idx_base =
+             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16;
++        int32_t affine_page_ids[NUM_MMA_KV];
++        if constexpr (has_k_affine_bias_v<Params> || has_v_affine_bias_v<Params> ||
++                      has_k_page_scale_v<Params> || has_v_page_scale_v<Params>) {
++#pragma unroll
++          for (uint32_t mma_kv = 0; mma_kv < NUM_MMA_KV; ++mma_kv) {
++            const uint32_t logical_token = kv_idx_base + mma_kv * 16;
++            // The final MMA tile is padded.  Clamp its metadata lookup to the
++            // final real token; the normal attention mask still discards the
++            // padded lanes, but an unchecked page-table read can go OOB first.
++            const uint32_t safe_logical_token = min(logical_token, kv_len_safe - 1);
++            const uint32_t logical_page =
++                paged_kv.indptr[request_idx] + safe_logical_token / paged_kv.page_size;
++            affine_page_ids[mma_kv] = static_cast<int32_t>(paged_kv.indices[logical_page]);
++          }
++        }
+         [[maybe_unused]] uint32_t kv_rope_base =
+             kv_idx_base +
+             (paged_kv.rope_pos_offset == nullptr ? 0 : paged_kv.rope_pos_offset[request_idx]);
+@@ -3866,11 +3972,30 @@
+                                          16 * KTraits::NUM_MMA_D_QK),
+               lane_idx, s_frag);
+         } else {
+-          compute_qk<KTraits>(
+-              &qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r,
+-              smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) * KTraits::NUM_MMA_KV *
+-                                         16 * KTraits::NUM_MMA_D_QK),
+-              lane_idx, s_frag);
++          if constexpr (has_k_page_scale_v<Params>) {
++            compute_qk<KTraits, /*REPACK_BF16=*/false, /*PAGE_GAUGE=*/true>(
++                &qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r,
++                smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_QK),
++                lane_idx, s_frag, nullptr, params.k_page_scale, affine_page_ids,
++                kv_head_idx, paged_kv.num_heads);
++          } else if constexpr (has_k_affine_bias_v<Params>) {
++            compute_qk<KTraits>(
++                &qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r,
++                smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_QK),
++                lane_idx, s_frag, params.k_affine_bias, params.k_affine_scale,
++                affine_page_ids, kv_head_idx, paged_kv.num_heads);
++          } else {
++            compute_qk<KTraits>(
++                &qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r,
++                smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_QK),
++                lane_idx, s_frag);
++          }
+         }
+         logits_transform<KTraits>(params, variant, /*batch_idx=*/request_idx, qo_packed_idx_base,
+                                   kv_idx_base, qo_len, kv_len, group_size, s_frag, tid,
+@@ -3956,11 +4081,31 @@
+                                          16 * KTraits::NUM_MMA_D_VO),
+               lane_idx, s_frag, o_frag, d, d_base);
+         } else {
+-          compute_sfm_v<KTraits>(
+-              &v_smem, &v_smem_offset_r,
+-              smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) * KTraits::NUM_MMA_KV *
+-                                         16 * KTraits::NUM_MMA_D_VO),
+-              lane_idx, s_frag, o_frag, d, d_base);
++          if constexpr (has_v_page_scale_v<Params>) {
++            compute_sfm_v<KTraits, /*REPACK_BF16=*/false, /*PAGE_GAUGE=*/true>(
++                &v_smem, &v_smem_offset_r,
++                smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_VO),
++                lane_idx, s_frag, o_frag, d, d_base, nullptr, params.v_page_scale,
++                affine_page_ids, kv_head_idx, paged_kv.num_heads);
++          } else if constexpr (has_v_affine_bias_v<Params>) {
++            compute_sfm_v<KTraits>(
++                &v_smem, &v_smem_offset_r,
++                smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_VO),
++                lane_idx, s_frag, o_frag, d, d_base, params.v_affine_bias,
++                params.v_affine_scale, affine_page_ids, kv_head_idx,
++                paged_kv.num_heads);
++          } else {
++            compute_sfm_v<KTraits>(
++                &v_smem, &v_smem_offset_r,
++                smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_VO),
++                lane_idx, s_frag, o_frag, d, d_base);
++          }
+         }
+ 
+         block.sync();

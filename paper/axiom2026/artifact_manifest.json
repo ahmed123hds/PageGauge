@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "paper": "PageGauge: Factoring Affine KV Quantization Through Softmax Attention",
+  "experiment_freeze": true,
+  "headline_artifacts": {
+    "quality": {
+      "path": "results/final_fixed_suffix_s4_a128_t768/quality/aggregate.json",
+      "sha256": "7adbbdc36f14c985004fe22349087210427f3831ee52d92e5a537667c81a64f9",
+      "evidence_category": "post-failure fixed-policy confirmation",
+      "passed": true,
+      "batch_size": 1,
+      "minimum_page_gauge_flashinfer_cosine": 0.9987073215386885,
+      "page_gauge_flashinfer_top1": 0.9989149305555556,
+      "labeled_logit_vectors": 9216
+    },
+    "external_quality": {
+      "path": "results/pg19_external_s4_a128_t768/aggregate.json",
+      "sha256": "35a10df9ccc70deb8efd01fb249d820040c100928bc706188bc6fbef3d8518fb",
+      "selection_manifest_path": "data/pg19_external_test_v1/PG19_EXTERNAL_CONFIRMATION_MANIFEST.json",
+      "selection_manifest_sha256": "58ddcea9703df25a85db97487bdfd455f4e6ec14086421cf5973f687108ff016",
+      "evidence_category": "pre-access frozen external-corpus confirmation",
+      "dataset": "PG-19 test",
+      "pagegauge_used_during_development": false,
+      "passed": true,
+      "batch_size": 1,
+      "book_clusters": 6,
+      "labeled_logit_vectors": 9216,
+      "minimum_page_gauge_flashinfer_cosine": 0.9992310400504005,
+      "page_gauge_flashinfer_top1": 0.9982638888888888,
+      "top1_cluster_bootstrap_lower_95": 0.9977213541666666,
+      "ppl_ratio_cluster_bootstrap_upper_95": 1.0000263288850908
+    },
+    "performance": {
+      "path": "results/final_fixed_suffix_s4_a128_t768/performance/fresh_process_williams_split128_v2/final_performance_analysis.json",
+      "sha256": "42c3553e3c652601c0fabacb6e59f430fb5589ff5f927c440592d72e584a19fc",
+      "evidence_category": "final measured fresh-process result",
+      "passed": true,
+      "batch_size": 4,
+      "cache_neutral_wall_speedup": 1.13262396966218,
+      "hierarchical_95_ci": [1.1323401651182818, 1.1327966721425278]
+    },
+    "factorization": {
+      "path": "results/page_gauge_int8/heterogeneous_fa2_correctness.json",
+      "sha256": "20c64fc5b9413a6888287a0c8e6ae29fa2fafbd1c307d6e2d5ef51ea49db367d",
+      "evidence_category": "development diagnostic",
+      "passed": true,
+      "explicit_reconstruction_checks": 27,
+      "split_invariance_checks": 18,
+      "maximum_absolute_output_error": 0.00006103515625,
+      "minimum_cosine": 0.9999998211860657
+    }
+  },
+  "final_policy": {
+    "model": "mistralai/Mistral-7B-v0.3",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "quality_batch_size": 1,
+    "performance_batch_size": 4,
+    "context_tokens": 20480,
+    "decode_steps": 1536,
+    "page_tokens": 16,
+    "exact_prefix_pages": 4,
+    "exact_static_suffix_pages": 128,
+    "exact_tail_tokens": 768,
+    "quantized_logical_pages_at_endpoint": 1196,
+    "total_logical_pages_at_endpoint": 1376,
+    "runtime_appended_int8_pages": 48,
+    "flashinfer_fp16_served_bytes": 11542724608,
+    "page_gauge_served_bytes": 7288520704,
+    "served_byte_reduction_fraction": 0.3685615007267442
+  },
+  "adaptive_disclosure": {
+    "original_source_frozen_selection_path": "results/exact_prefix_s3_v1/train_structural/matched_d1024_t768_source_frozen.json",
+    "original_source_frozen_selection_sha256": "d1c8675b3b1f70437023dc8cd56665ea79602aaf6eda2752717c0cebc127798f",
+    "statement": "The original preregistered TEST confirmation failed. S4/A128/T768 was selected after TEST-exposed diagnosis; the final quality result is fixed-policy confirmation, not untouched held-out selection."
+  },
+  "paper_build": {
+    "format": "official NeurIPS 2026 dblblindworkshop LaTeX",
+    "main_body_pages": 4,
+    "total_pdf_pages": 16,
+    "references_start_page": 5,
+    "appendix_start_page": 6,
+    "checklist_start_page": 10,
+    "pdf_path": "output/pdf/pagegauge_axiom2026_submission.pdf",
+    "pdf_sha256": "268ffa4b9c36ff172bae7ea3317928fcd25c10fe829600a077dca4c709f42a26",
+    "main_tex_sha256": "501a6994c28df37e12d332c6da9567f9ac2dc7ced2ac7d8e179a2131f00f69af",
+    "appendix_tex_sha256": "6af3c5da4ac7aa329e50456c72a60ff7ecb5a897c8977ff241eb153c2c67fe1d",
+    "checklist_tex_sha256": "9ade2c47c2828802034cd489ab2156cfacc79a489f512fbcf421c0ef63119e23",
+    "references_bib_sha256": "0f080576d739233f55e0c4ea92e39114e652259f78ba9ce48289ae33d45f16b0",
+    "official_style_sha256": "c3fc2894e83d2517ca18b66741d6c595986d97957dc08ec08bb2125a7ec4555a"
+  }
+}

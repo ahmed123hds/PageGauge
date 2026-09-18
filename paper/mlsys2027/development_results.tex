@@ -1,0 +1,422 @@
+\documentclass{article}
+\usepackage{microtype,graphicx,booktabs,amsmath,amssymb}
+\usepackage{hyperref}
+\usepackage{mlsys2025}
+% Content-only notice override for this internal draft; vendor style untouched.
+\makeatletter
+\renewcommand{\Notice@String}{Development draft for author review. Not submitted to MLSys.}
+\makeatother
+\hypersetup{hidelinks,pdfsubject={PageGauge MLSys 2027 development evidence}}
+\mlsystitlerunning{PageGauge: Development Evidence}
+\begin{document}
+\twocolumn[
+\mlsystitle{PageGauge: Factoring Affine KV Quantization\texorpdfstring{\\}{: }Development Evidence for an MLSys 2027 Draft}
+\begin{mlsysauthorlist}
+\mlsysauthor{Anonymous Authors}{anon}
+\end{mlsysauthorlist}
+\mlsysaffiliation{anon}{Anonymous Institution}
+\mlsyscorrespondingauthor{Anonymous Author}{anon@example.org}
+\vskip 0.3in
+\begin{abstract}
+This development report separates PageGauge's algebraic identity from
+quantization fidelity and runtime efficiency. It records completed experiments
+on an RTX 5090, including native low-bit cache comparisons and a matched
+scale-placement control. The current evidence supports a narrow systems claim,
+not universal quality or speed superiority. All quality results below use
+exposed development windows; independent final evaluation, broader generalization,
+and serving experiments remain outstanding. This is an evidence draft for
+author review, not a submission-ready paper.
+\end{abstract}
+]
+\printAffiliationsAndNotice{}
+
+\section{Mathematical Contract}
+For one query $q$ and KV head, let page $p$ contain reconstructed affine keys
+and values
+\begin{align}
+ \widehat K_p &= \mathbf 1 c_K^\top+s_p^K Z_p^K,\\
+ \widehat V_p &= \mathbf 1 c_V^\top+s_p^V Z_p^V.
+\end{align}
+The centers $c_K,c_V$ are common across the merged domain; each scale is a
+scalar for its page and head. With $\alpha=1/\sqrt d$, the term
+$\alpha q^\top c_K$ shifts every logit equally and cancels in softmax.
+Let $\mathcal Q$ be quantized pages, $\mathcal E$ exact rows, and $P$ globally
+normalized attention. With row-vector weights $P_p$ for each quantized page,
+\begin{equation}
+\begin{split}
+ o^\top={}&c_V^\top+\sum_{p\in\mathcal Q}s_p^V P_p Z_p^V\\
+          &+\sum_{j\in\mathcal E}P_j(v_j-c_V)^\top.
+\end{split}
+\end{equation}
+Exact regions use centered keys and values and join the same online softmax
+merge. The value center is restored once after the merge, not once per page.
+This identity is exact in real arithmetic relative to the reconstructed mixed
+cache, not the original unquantized model. Finite-precision execution and
+quantization error therefore require distinct measurements.
+
+\section{Quality and Storage}
+Table~\ref{tab:quality} uses Mistral-7B-v0.3, batch one, 20,480 initial tokens,
+and 1,536 recurrent teacher-forced steps. Eight disjoint exposed TRAIN windows
+provide 12,288 scored labels. Perplexity (PPL) is computed by aggregating token
+negative log likelihood before exponentiation. Each row retains its own HF
+reference: PageGauge/FlashInfer use Transformers 4.57.6 and SDPA; the native
+KIVI and BitDecoding integration use Transformers 4.36.2 and eager attention.
+Actual token IDs are matched across stacks.
+
+\begin{table*}[t]
+\caption{Development quality and served KV storage. PPL ratios compare each
+implementation with its own HF reference. Intervals are descriptive paired-window
+bootstrap intervals, not independent-book or prospective non-inferiority tests.
+Cache storage includes metadata and exact residual regions but excludes model
+weights, activations, allocator reserve, and separate staging.}
+\label{tab:quality}
+\centering\small
+\input{generated/quality_rows.tex}
+\par\smallskip\footnotesize
+$^*$Native SM120-port kernels integrated into a shared Mistral harness,
+not the upstream BitDecoding model engine. An additional 5.00012 MiB of
+persistent staging is excluded from served KV storage and must be counted in
+deployment capacity. NSNQuant includes resident quantizer/codebook buffers;
+its unquantized control applies the native value/output rotation. NSN uses
+Transformers 4.48.1 with full-prefix SDPA prefill and its own HF reference.
+MiB denotes $2^{20}$ bytes.
+\end{table*}
+
+\begin{table*}[t]
+\caption{Instrumented GPU self-time in ms per decode step, batch one, final
+129 steps of the same 1,536-step development trajectory. The FP16 attention
+column is the full cache for FlashInfer but only exact regions for PageGauge.
+The total also includes operations not separately shown.}
+\label{tab:profile}\centering\small
+\input{generated/profile_rows.tex}
+\end{table*}
+
+The measured PageGauge PPL is close to its FP16 reference on this cohort, but
+the four-bit competitors also have intervals containing one while using much
+less cache storage. These observations do not establish PageGauge's predictive
+quality superiority. Top-1 agreement and logit cosine remain supporting
+diagnostics; neither replaces perplexity or generated-task evaluation.
+
+\section{What Does Factorization Save?}
+The scale-placement control uses identical INT8 history, exact regions, and
+common-center factoring in both arms. Only placement of affine scales relative
+to the FP16 code contractions changes. Eight fresh processes in ABBA/BAAB order
+cover two TRAIN fixtures at batch four, initial context 20,480, and decode
+length 1,536. Execution checks cover recurrence, graph replay, cache finalization,
+new-history consumption, and sampled device exclusivity.
+
+\begin{table}[t]
+\caption{Scale-placement control: register-control latency divided by
+factorized latency. Hierarchical intervals resample fixture then adjacent pair;
+only two fixture clusters limit generality.}
+\label{tab:causal}\centering\small
+\input{generated/causal_rows.tex}
+\end{table}
+
+The cache-neutral gain is approximately 0.43\%, not the entire previously
+measured FlashInfer-relative advantage. The shared-center contribution has not
+been isolated by this contrast. A stronger causal account must retain this
+distinction rather than attributing all cache-format and scheduling effects to
+scale placement.
+
+\section{Exact-Region Scheduling}
+An instrumented batch-one trajectory identifies a separate runtime cost:
+the exact FP16 regions and merge operations can offset savings in compressed
+history attention. Changing only the exact-region split from 128 to 32 pages
+reduces its profiled cost (Table~\ref{tab:profile}); history work and projection
+work remain similar. The number of launches does not decrease. Profiled kernel
+self-time is not end-to-end latency. A separate optimized eight-process
+ABBA/BAAB confirmation at batch four measures approximately 2.4\% lower model-step
+latency for split32 (Table~\ref{tab:split}), with identical served cache storage
+of 7,288,520,704 bytes. All eight execution assessments pass. This is a
+PageGauge-versus-PageGauge scheduling contrast on two TRAIN fixtures, not a new
+FlashInfer-relative or independent-quality claim.
+
+\begin{table}[t]
+\caption{Optimized exact-region scheduling: split128 latency divided by
+split32 latency at B4/C20480/D1536. Eight fresh processes, four adjacent pairs,
+two fixture clusters; hierarchical 95\% intervals.}
+\label{tab:split}\centering\small
+\input{generated/split_rows.tex}
+\end{table}
+
+\section{Second Model Family: Qwen3-8B}
+Eight exposed WikiText TRAIN windows at B1/C20480/D1536 provide another
+12,288 labels on Qwen3-8B (36 layers). Both custom backends retain its native
+per-head query/key normalization before RoPE. All arms use the same FP16
+conversion of the BF16 checkpoint, not native BF16 inference. The shared HF
+prefill uses 1,024-token chunks; recurrent labels use the native tokenizer with
+no artificial BOS/EOS or chat template. Own HF PPL is 7.47057. Table~\ref{tab:qwen}
+shows close development fidelity; PageGauge's interval includes one, not
+evidence of improved predictive quality. Top-1 agreement is 99.683\%.
+All eight runs consume 48 newly aged INT8 history pages per layer.
+
+\begin{table*}[t]
+\caption{Qwen3-8B development quality and allocated served KV storage.
+Eight windows, 12,288 labels; descriptive paired-window intervals.
+These are not speed, generated-task, independent TEST, or non-inferiority results.}
+\label{tab:qwen}\centering\small
+\input{generated/qwen_rows.tex}
+\par\smallskip\footnotesize
+$^\dagger$Native Kitty-Pro: two-bit K/V with 25\% of K channels boosted to
+four bits. Two loaded channel-index operands are widened to int32 before
+byte-offset arithmetic; stored metadata and quantization policy are unchanged.
+Kitty uses its pinned Transformers 4.53.2 fork and full-prefix SDPA prefill;
+PageGauge/FlashInfer use 4.57.6 and chunked prefill. Each row retains its own
+HF reference on exactly matched token IDs. MiB denotes $2^{20}$ bytes.
+\end{table*}
+
+\begin{table*}[t]
+\caption{CPU-backed common-engine timing pilot, B4/C20480/D1536. Step latency
+is for the whole batch; throughput counts four output tokens per step.
+Ranges are the minimum and maximum of three within-process repeats, not
+confidence intervals. Peak allocation includes weights and native temporary
+allocations during timed decode; GiB denotes $2^{30}$ bytes.}
+\label{tab:frontier}\centering\small
+\input{generated/frontier_rows.tex}
+\end{table*}
+
+The matched native Kitty-Pro cohort reduces served KV storage by 83.16\%,
+with PPL/HF 1.01716 and descriptive interval [1.00248, 1.03602]. Its top-1
+agreement is 93.156\%. Thus it offers substantially smaller storage but greater
+predictive distortion on these windows; this is a quality--memory trade-off,
+not an equal-bit or equal-memory comparison. No Kitty speed claim follows.
+
+Before this cohort, the native port failed the same-cache execution oracle.
+The loaded uint8 boosted-channel indices overflowed when multiplied by a
+32-byte address stride in the inspected compiled kernel. Widening both the
+packing and attention address operands to int32 restored the intended layout.
+The corrected native port passes B1/B4 recurrent same-cache checks, with maximum
+relative $L_2$ error below $4.0\times10^{-5}$. This compatibility correction is
+disclosed separately from predictive quality; the failed original-port
+diagnostic is retained. It does not change PageGauge's method.
+
+The preceding short C4096/D785 pilot also exposes a limitation: PageGauge
+allocates 786,440,448 KV bytes versus 721,944,576 for FP16. Its fixed exact-region
+storage and allocated code capacity outweigh compression at this context.
+The long-context memory reduction therefore must not be generalized to every
+sequence length. That pilot's PPL/HF ratio is 1.00006 on only 785 labels.
+
+\section{Common-Engine Timing and Memory}
+A separate Mistral experiment puts all five attention backends in the same
+eager Transformers 4.36.2 body, without packed projection replacement or CUDA
+graph capture. Four independent TRAIN requests use 20,480 prefill tokens and
+1,536 decode steps. Each method gets one fresh process, one full recurrence
+warmup, and three timed recurrences. This is a pilot, not a hierarchical
+confidence-interval experiment or each method's best serving implementation.
+
+Initial serving states are packed from serial coherent HF prefills, stored on
+the CPU, and uploaded before each recurrence. No original GPU FP16 reference
+cache is retained during decode. Prefill, packing, host storage, and upload are
+outside the decode timing and are recorded separately. The common 28 GiB
+PyTorch allocator budget does not cap allocations outside that allocator.
+Served KV excludes BitDecoding's separately recorded append staging; peak
+allocation includes it. These are not maximum-batch or admission-cost results.
+
+PageGauge's median latency is higher than FlashInfer's in this common eager
+body, with overlapping and variable repeat ranges (Table~\ref{tab:frontier}).
+This negative point result is retained, not pooled with optimized-decoder
+measurements. More attention launches and integration overhead are candidate
+explanations to test, not established causes. A faster compressed-history kernel
+alone would not establish an application-level speedup.
+
+Native KIVI INT4 also illustrates why cache bytes alone do not determine
+deployment capacity: its timed peak allocation is 22,941,229,568 bytes versus
+18,684,578,304 bytes at the final boundary. Native GQA repeats, concatenation,
+and old/new legacy-cache lifetimes are possible contributors, requiring
+separate attribution. No native-baseline policy is changed to improve its
+position in this completed cohort.
+
+\clearpage
+\section{Cross-Domain Development: PG-19}
+Eight PG-19 training books are selected by a fixed hash ordering of object
+names among metadata-size-eligible books, before contents or outcomes are
+examined. One fixed B1/C20480/D1536 window per book supplies 12,288 labels per
+model for Mistral-7B-v0.3 and Qwen3-8B. Books are shared across models, but their
+native tokenizers yield different token sequences. The S4/A128/T768
+representation is unchanged; PageGauge uses the exact32 launch selection.
+Each trajectory consumes 48 newly aged INT8 history pages. There is no
+quality-driven stopping or book replacement.
+
+\begin{table}[ht]
+\caption{Eight PG-19 TRAIN books per model. M7: Mistral-7B-v0.3; Q8: Qwen3-8B.
+Own HF model-token PPL is 6.42158 and 12.08988, respectively.
+Intervals are descriptive paired-book bootstrap intervals, not final TEST
+or prospective non-inferiority results.}
+\label{tab:books}\centering\footnotesize
+\input{generated/book_rows.tex}
+\end{table}
+
+PageGauge retains 99.805\% and 99.634\% top-1 agreement for Mistral and Qwen,
+respectively, and reduces served KV storage by 36.86\% for both. Qwen's PPL
+point estimate increases by 0.0367\%; its interval permits an increase of about
+0.1014\%. Both PageGauge PPL-ratio intervals include one. This supports close
+development fidelity, not superior quality or a prospective non-inferiority pass.
+These are subword/model-token PPL measurements on selected windows, not the
+official whole-corpus word-normalized PG-19 score. The training books are now
+exposed development data, and may also have appeared in model pretraining.
+Independent final evaluation remains outstanding.
+
+\section{Attention-Dispatch Integration Pilot}
+An opt-in follow-up reuses the existing attention-only CUDA graph capture
+for both FlashInfer and PageGauge, leaving the common dense body, kernels,
+cache policies, append and planning unchanged. All attention topologies are
+prepared before decode timing; there is no eager fallback. At
+B4/C20480/D1536, each backend completes 49,152 graph replays. All 352 selected
+same-cache attention comparisons per backend are exactly equal to the original
+execution, and the restored cache is bitwise unchanged by capture.
+
+\begin{table}[ht]
+\caption{Matched attention-only graph pilot. One fresh process per arm,
+one full recurrence warmup and three timed repeats on the same TRAIN workload.
+Ranges are not confidence intervals.}
+\label{tab:graphs}\centering\small
+\input{generated/graph_rows.tex}
+\end{table}
+
+The point ratio is only 1.01731$\times$ FlashInfer/PageGauge, with overlapping
+repeat ranges (Table~\ref{tab:graphs}). This does not establish a reliable
+speedup or the aspirational 1.2--1.5$\times$ target. The earlier eager negative
+point is retained as a separate dispatch configuration. Across restored rounds,
+graph preparation takes 0.074--0.159\,s for FlashInfer and 0.342--0.422\,s for
+PageGauge, outside decode timing. Each first capture increases device-used
+memory by 16\,MiB. Order-balanced replication and setup amortization remain
+necessary before a final integration claim; no production default is changed.
+
+\section{Capacity Grid and Integration Diagnosis}
+The original common-eager configuration is tested on a fixed B4/B8/B16 grid
+at C20480/D1536 and the same 28\,GiB PyTorch allocator budget. The completed
+B4 pilot is reused. New feasible points require a full recurrence warmup and
+one full timed recurrence; these are capacity pilots, not replicated throughput
+estimates. Larger points are excluded without execution only when FP16 parameter
+storage plus a conservative minimum-bit live-cache bound already exceeds the
+budget. Metadata, exact-region premiums and temporary allocations are omitted
+from that bound. It is not an observed CUDA OOM.
+
+\begin{table}[ht]
+\caption{Original fixed capacity grid. OK: complete recurrence; OOM: measured
+CUDA allocation failure; Bound: conservative analytical exclusion. These are
+verified grid points, not global maximum batch sizes.}
+\label{tab:capacity}\centering\small
+\input{generated/capacity_rows.tex}
+\end{table}
+
+At B8, BitDecoding INT4 completes at 27.75\,ms per step (288.24 aggregate
+tokens/s), while KIVI INT2 completes at 87.05\,ms (91.90 tokens/s). No B16 point
+completes under the original configuration. Failed outcomes remain in the
+record, including PageGauge's B8 setup failure and the native warmup failures.
+
+An explicit-default replay isolates PageGauge's failing 128\,MiB workspace
+allocation. The allocator has 253.54\,MiB of inactive split storage across 67
+blocks, but its largest inactive block is only 4\,MiB. Live storage plus the
+requested workspace fits the budget; allocator reserve prevents a fresh
+allocation. Enabling expandable segments removes that OOM without changing
+the budget, representation or kernel math. This exposes a second issue:
+graph-padded planning cannot accommodate the fixed split at B8, even though
+the common eager benchmark never replays a graph.
+
+A separate opt-in adapter therefore uses non-graph planning with the declared
+expandable allocator. Its complete B8/C20480/D1536 validation checks 12,288
+labels and preserves the restored cache bit-for-bit. Thirty-six selected
+same-cache comparisons reconstruct one KV head/request at a time for VRAM:
+maximum relative $L_2$ error is 0.00098 and maximum absolute error is 0.00192,
+below unchanged execution limits of 0.005 and 0.02. These cover 144 query rows,
+not every head at every step. Development PPL is 5.20478 versus its own serial
+HF reference 5.20417 (ratio 1.000116); top-1 agreement is 99.829\%.
+
+The original failures are not relabeled as successes. A separate fresh-process
+B8 pilot completes one full recurrence warmup and one timed recurrence at
+25.68\,ms per step, or 311.50 aggregate tokens/s. Its state restore and bitwise
+checks take 23.85\,s outside decode timing; this is diagnostic CPU-backed setup,
+not native-prefill or admission latency. All four originally failed native
+cells also receive explicit-default and expandable-allocator runs: KIVI INT4
+at B8/B16, and KIVI INT2 and BitDecoding INT4 at B16. All eight runs retain
+measured CUDA OOM under the same budget, with no silent fallback. This
+diagnostic does not establish a global capacity maximum or a throughput
+advantage; timing replication remains necessary. No production default is
+changed. The record also retains the
+first failed validation of the new checker: its GQA-expanded center was
+incorrectly indexed, then corrected and rerun without relaxing tolerances.
+
+\input{quantization_error_analysis.tex}
+
+\section{Native Prompt and Decode Costs}
+Table~\ref{tab:nativecost} adds native NSNQuant/Mistral and Kitty/Qwen3
+request-cost pilots, each with its own Transformers HF control. Each arm has
+one fresh process, a full-request warmup and three repeated B1/C20480/D1536
+requests. Native cache allocation, quantization and full-prefix SDPA plus the
+last prompt LM head are included in prefill; model loading and static weight
+rotation are separate. Decode includes all layers, recurrent updates and the
+LM head, using teacher-forced inputs without sampling or server overhead.
+No GPU FP16 reference cache is retained in the native quantized arms.
+
+\begin{table*}[t]
+\caption{Native request-cost pilots on one exposed TRAIN fixture per model.
+Medians and within-process repeat ranges, not confidence intervals. Peak is
+the maximum allocated storage across prefill/decode repeats, including model
+weights; served KV and its reduction are separate. Kitty-Pro was rerun after
+an external interruption, while the three completed arms were retained.
+The time gap precludes an adjacent matched Kitty speed comparison.}
+\label{tab:nativecost}\centering\small
+\input{generated/native_cost_rows.tex}
+\end{table*}
+
+\begin{table*}[t]
+\caption{Fixed regional-policy ablation on eight PG19 TRAIN books. Ratios
+near one indicate similar model-token PPL, not a prospective non-inferiority
+test. The interval is a paired-book descriptive bootstrap relative to the
+reference PageGauge policy; top-1 agreement is instead relative to HF.
+KV reduction uses the same full FP16 cache as the denominator for every row.}
+\label{tab:regional}\centering\small
+\input{generated/regional_rows.tex}
+\end{table*}
+
+Lower cache storage does not imply an equal reduction in request cost.
+NSNQuant's fixed-B1 decoding gain over its HF point is modest, while its
+prefill is slightly longer. Kitty-Pro's observed decode and prefill costs are
+higher than the earlier HF point, but the interruption prevents attributing
+that difference solely to its method. These results neither measure
+memory-enabled maximum throughput nor establish a PageGauge-relative advantage
+across different engines. Balanced fresh-process replication and actual
+serving measurements remain necessary.
+
+\section{Exact-Region Ablation}
+We evaluate four fixed, one-factor policies on the same eight preselected
+Mistral PG19 TRAIN books, with 1536 recurrent labels per book and policy.
+All policies share the coherent HF prefill, INT8 quantizer, scalar metadata,
+centers and kernels. The reference is S4/A128/T768; the alternatives remove
+the exact prefix, remove the static prefill suffix, or reduce the recent tail
+to one page. T16 is the minimum supported nonempty page, not a zero-residual
+configuration. No production default is changed by this development ablation.
+
+Selected same-cache FP32 attention checks cover three layers, three decode
+positions and two KV-head groups per book and policy: 144 group checks per
+policy. These check execution of the reconstructed cache, not fidelity to
+unquantized HF activations. Attention-region mass is measured only for these
+selected queries using each candidate's reconstructed keys, not all model
+attention or the original HF distribution. Changing an exact region changes
+the representation error even though the factorization identity is unchanged.
+Table~\ref{tab:regional} reports the predictive and storage consequences.
+Removing the static suffix reduces PageGauge storage by 14.73\% while
+retaining the reference policy's 99.805\% top-1 agreement with HF on this
+cohort. Its PPL/reference-policy ratio is 0.999915, a very small change;
+this exploratory multi-policy comparison is not evidence of general quality
+superiority. Removing the prefix instead lowers top-1 agreement to 99.349\%
+for only 0.46\% less PageGauge storage. Cross-model confirmation is pending.
+The instrumented quality loop is not used as a latency measurement; clean
+fresh-process costs and replication remain necessary before policy selection.
+
+\section{Outstanding Evidence}
+Remaining work includes generated-task quality, additional model families,
+shape/GPU coverage, residual-policy timing, replicated post-diagnosis
+throughput, capacity boundaries, and realistic serving with prefill and
+admission. Native cost pilots are not replicated serving evidence. The completed
+capacity grid is not a global capacity search or an optimized serving result.
+Fixed value conditioning is not promoted: its development results did not
+establish a useful quality improvement. Final code and input policies must
+be frozen before independent TEST exposure.
+
+This is not the full main manuscript; submitted workshop artifacts are
+unchanged. Tables use hash-verified raw results, with provenance in the
+accompanying local evidence manifest.
+\end{document}

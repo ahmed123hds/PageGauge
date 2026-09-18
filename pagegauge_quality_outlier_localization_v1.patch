@@ -1,0 +1,842 @@
+--- /tmp/pagegauge_orig/diagnostics/benchmark_sustained_dynamic_graphs.py	2026-08-18 06:47:23.949063381 +0000
++++ diagnostics/benchmark_sustained_dynamic_graphs.py	2026-08-18 06:49:46.589435475 +0000
+@@ -99,6 +99,22 @@
+     parser.add_argument("--cache-scrub-mib", type=int, default=256)
+     parser.add_argument("--min-logits-cosine", type=float, default=0.995)
+     parser.add_argument("--min-top1-agreement", type=float, default=0.80)
++    parser.add_argument(
++        "--quality-diagnostics-top-k",
++        type=int,
++        default=0,
++        help=(
++            "Record a posthoc, non-publication outlier report for the K lowest "
++            "HF-vs-backend logit-cosine rows. Zero disables the report. This "
++            "does not alter the strict quality thresholds or timed kernels."
++        ),
++    )
++    parser.add_argument(
++        "--quality-diagnostics-top-vocab",
++        type=int,
++        default=8,
++        help="Vocabulary entries retained for each diagnosed outlier row.",
++    )
+     parser.add_argument("--output", type=Path, required=True)
+     return parser.parse_args()
+ 
+@@ -128,6 +144,10 @@
+         raise SystemExit("logits cosine threshold lies outside [-1,1]")
+     if not 0.0 <= args.min_top1_agreement <= 1.0:
+         raise SystemExit("top-1 threshold lies outside [0,1]")
++    if args.quality_diagnostics_top_k < 0:
++        raise SystemExit("quality diagnostic top-k cannot be negative")
++    if args.quality_diagnostics_top_vocab <= 0:
++        raise SystemExit("quality diagnostic vocabulary width must be positive")
+ 
+ 
+ def sha256_tensors(tensors: list[torch.Tensor] | tuple[torch.Tensor, ...]) -> str:
+@@ -283,6 +303,315 @@
+     }
+ 
+ 
++def _quality_quantiles(values: torch.Tensor) -> dict[str, float]:
++    """Return fixed quantiles for a finite one-dimensional diagnostic tensor."""
++
++    flat = values.detach().float().reshape(-1).cpu()
++    if flat.numel() == 0 or not bool(torch.isfinite(flat).all()):
++        raise ValueError("quality diagnostics require finite non-empty values")
++    probabilities = (
++        ("minimum", 0.0),
++        ("p0_1", 0.001),
++        ("p0_5", 0.005),
++        ("p1", 0.01),
++        ("p5", 0.05),
++        ("median", 0.50),
++        ("p95", 0.95),
++        ("p99", 0.99),
++        ("maximum", 1.0),
++    )
++    return {
++        name: float(torch.quantile(flat, probability).item())
++        for name, probability in probabilities
++    }
++
++
++def _consecutive_failure_clusters(
++    below_gate: torch.Tensor,
++) -> list[dict[str, int]]:
++    """Describe consecutive below-threshold step runs independently per request."""
++
++    if below_gate.ndim != 2 or below_gate.dtype != torch.bool:
++        raise ValueError("failure mask must be boolean [steps,batch]")
++    steps, batch_size = below_gate.shape
++    clusters: list[dict[str, int]] = []
++    mask = below_gate.cpu()
++    for request in range(batch_size):
++        start: int | None = None
++        for step in range(steps + 1):
++            active = step < steps and bool(mask[step, request])
++            if active and start is None:
++                start = step
++            elif not active and start is not None:
++                clusters.append(
++                    {
++                        "request": request,
++                        "start_step": start,
++                        "end_step_inclusive": step - 1,
++                        "length": step - start,
++                    }
++                )
++                start = None
++    return clusters
++
++
++def diagnose_logit_outliers(
++    expected: torch.Tensor,
++    observed: torch.Tensor,
++    *,
++    input_tokens: torch.Tensor,
++    start_position: int,
++    exact_tail_tokens: int,
++    minimum_cosine: float,
++    top_rows: int,
++    top_vocab: int,
++) -> dict[str, Any]:
++    """Localize strict HF-vs-backend logit-cosine failures without reranking.
++
++    The function is intentionally posthoc.  It consumes the already-collected
++    CPU logits and teacher inputs, performs no model or cache mutation, changes
++    no acceptance threshold, and is excluded from publication timing claims.
++    """
++
++    if expected.shape != observed.shape or expected.ndim != 3:
++        raise ValueError("diagnostic logits must be matching [steps,batch,vocab]")
++    steps, batch_size, vocab_size = expected.shape
++    if tuple(input_tokens.shape) != (steps, batch_size):
++        raise ValueError("diagnostic input tokens must have shape [steps,batch]")
++    if top_rows <= 0:
++        raise ValueError("diagnostic top-row count must be positive")
++    if top_vocab <= 0:
++        raise ValueError("diagnostic top-vocabulary width must be positive")
++    if exact_tail_tokens <= 0 or exact_tail_tokens % PG.PAGE:
++        raise ValueError("diagnostic exact tail must contain complete pages")
++
++    reference = expected.detach().float().cpu()
++    candidate = observed.detach().float().cpu()
++    inputs = input_tokens.detach().long().cpu()
++    difference = candidate - reference
++    cosine = torch.nn.functional.cosine_similarity(reference, candidate, dim=-1)
++    reference_norm = torch.linalg.vector_norm(reference, dim=-1)
++    candidate_norm = torch.linalg.vector_norm(candidate, dim=-1)
++    difference_norm = torch.linalg.vector_norm(difference, dim=-1)
++    relative_l2 = difference_norm / reference_norm.clamp_min(1.0e-30)
++    maximum_absolute_error = difference.abs().amax(dim=-1)
++    rmse = difference.square().mean(dim=-1).sqrt()
++    top1_match = reference.argmax(dim=-1).eq(candidate.argmax(dim=-1))
++    below_gate = cosine < float(minimum_cosine)
++
++    retained_vocab = min(int(top_vocab), int(vocab_size))
++    reference_top_values, reference_top_ids = reference.topk(
++        retained_vocab, dim=-1
++    )
++    candidate_top_values, candidate_top_ids = candidate.topk(
++        retained_vocab, dim=-1
++    )
++    pair_width = min(2, int(vocab_size))
++    reference_pair = reference.topk(pair_width, dim=-1)
++    candidate_pair = candidate.topk(pair_width, dim=-1)
++    reference_margin = (
++        reference_pair.values[..., 0] - reference_pair.values[..., 1]
++        if pair_width > 1
++        else torch.full_like(reference_pair.values[..., 0], float("inf"))
++    )
++    candidate_margin = (
++        candidate_pair.values[..., 0] - candidate_pair.values[..., 1]
++        if pair_width > 1
++        else torch.full_like(candidate_pair.values[..., 0], float("inf"))
++    )
++
++    flattened_indices = list(range(int(steps * batch_size)))
++    flattened_cosine = cosine.reshape(-1)
++    flattened_indices.sort(
++        key=lambda index: (
++            float(flattened_cosine[index].item()),
++            index // batch_size,
++            index % batch_size,
++        )
++    )
++    selected_indices = flattened_indices[: min(top_rows, len(flattened_indices))]
++
++    prefix_quantized_pages = max(
++        0, (int(start_position) - int(exact_tail_tokens)) // PG.PAGE
++    )
++    worst_rows: list[dict[str, Any]] = []
++    for rank, flattened_index in enumerate(selected_indices, start=1):
++        step = flattened_index // batch_size
++        request = flattened_index % batch_size
++        position = int(start_position) + step
++        generated_tokens_including_current = step + 1
++        generated_int8_pages_visible = max(
++            0,
++            (generated_tokens_including_current - int(exact_tail_tokens))
++            // PG.PAGE,
++        )
++        reference_top1 = int(reference_pair.indices[step, request, 0].item())
++        candidate_top1 = int(candidate_pair.indices[step, request, 0].item())
++        candidate_at_reference_top1 = float(
++            candidate[step, request, reference_top1].item()
++        )
++        reference_at_candidate_top1 = float(
++            reference[step, request, candidate_top1].item()
++        )
++        reference_ids = reference_top_ids[step, request].tolist()
++        candidate_ids = candidate_top_ids[step, request].tolist()
++        overlap = len(set(reference_ids) & set(candidate_ids))
++        worst_rows.append(
++            {
++                "rank": rank,
++                "step": step,
++                "request": request,
++                "absolute_position": position,
++                "input_token_id": int(inputs[step, request].item()),
++                "page_offset": position % PG.PAGE,
++                "is_page_close": position % PG.PAGE == PG.PAGE - 1,
++                "generated_tokens_including_current": (
++                    generated_tokens_including_current
++                ),
++                "generated_int8_pages_visible": generated_int8_pages_visible,
++                "prefix_quantized_pages": prefix_quantized_pages,
++                "total_quantized_pages_visible": (
++                    prefix_quantized_pages + generated_int8_pages_visible
++                ),
++                "cosine": float(cosine[step, request].item()),
++                "below_strict_gate": bool(below_gate[step, request].item()),
++                "relative_l2": float(relative_l2[step, request].item()),
++                "rmse": float(rmse[step, request].item()),
++                "maximum_absolute_error": float(
++                    maximum_absolute_error[step, request].item()
++                ),
++                "reference_l2": float(reference_norm[step, request].item()),
++                "candidate_l2": float(candidate_norm[step, request].item()),
++                "reference_mean": float(reference[step, request].mean().item()),
++                "candidate_mean": float(candidate[step, request].mean().item()),
++                "reference_std": float(
++                    reference[step, request].std(unbiased=False).item()
++                ),
++                "candidate_std": float(
++                    candidate[step, request].std(unbiased=False).item()
++                ),
++                "reference_top1_id": reference_top1,
++                "candidate_top1_id": candidate_top1,
++                "top1_match": reference_top1 == candidate_top1,
++                "reference_top1_margin": float(
++                    reference_margin[step, request].item()
++                ),
++                "candidate_top1_margin": float(
++                    candidate_margin[step, request].item()
++                ),
++                "candidate_logit_at_reference_top1": (
++                    candidate_at_reference_top1
++                ),
++                "reference_logit_at_candidate_top1": (
++                    reference_at_candidate_top1
++                ),
++                "candidate_reference_top1_advantage": float(
++                    (
++                        candidate[step, request, reference_top1]
++                        - candidate[step, request, candidate_top1]
++                    ).item()
++                ),
++                "reference_candidate_top1_advantage": float(
++                    (
++                        reference[step, request, candidate_top1]
++                        - reference[step, request, reference_top1]
++                    ).item()
++                ),
++                "top_vocab_overlap_count": overlap,
++                "top_vocab_overlap_fraction": overlap / retained_vocab,
++                "reference_top_ids": reference_ids,
++                "reference_top_values": reference_top_values[
++                    step, request
++                ].tolist(),
++                "candidate_top_ids": candidate_ids,
++                "candidate_top_values": candidate_top_values[
++                    step, request
++                ].tolist(),
++            }
++        )
++
++    per_request = []
++    for request in range(batch_size):
++        request_cosine = cosine[:, request]
++        minimum_step = int(request_cosine.argmin().item())
++        request_below = below_gate[:, request]
++        request_top1 = top1_match[:, request]
++        per_request.append(
++            {
++                "request": request,
++                "minimum_cosine": float(request_cosine[minimum_step].item()),
++                "minimum_step": minimum_step,
++                "minimum_absolute_position": int(start_position) + minimum_step,
++                "mean_cosine": float(request_cosine.mean().item()),
++                "rows_below_gate": int(request_below.sum().item()),
++                "top1_mismatches": int((~request_top1).sum().item()),
++            }
++        )
++
++    per_page_offset = []
++    positions = torch.arange(steps, dtype=torch.long) + int(start_position)
++    for offset in range(PG.PAGE):
++        selected_steps = positions.remainder(PG.PAGE).eq(offset)
++        selected_cosine = cosine[selected_steps]
++        selected_below = below_gate[selected_steps]
++        selected_top1 = top1_match[selected_steps]
++        per_page_offset.append(
++            {
++                "page_offset": offset,
++                "rows": int(selected_cosine.numel()),
++                "minimum_cosine": float(selected_cosine.min().item()),
++                "mean_cosine": float(selected_cosine.mean().item()),
++                "rows_below_gate": int(selected_below.sum().item()),
++                "top1_mismatches": int((~selected_top1).sum().item()),
++            }
++        )
++
++    return {
++        "schema_version": 1,
++        "purpose": (
++            "posthoc localization of strict HF-vs-backend logit outliers; "
++            "not a replacement quality endpoint and not publication timing"
++        ),
++        "threshold_unchanged": float(minimum_cosine),
++        "configuration": {
++            "steps": int(steps),
++            "batch_size": int(batch_size),
++            "vocab_size": int(vocab_size),
++            "start_position": int(start_position),
++            "exact_tail_tokens": int(exact_tail_tokens),
++            "page_size": int(PG.PAGE),
++            "top_rows_retained": len(worst_rows),
++            "top_vocab_retained": retained_vocab,
++        },
++        "summary": {
++            "checked_rows": int(steps * batch_size),
++            "rows_below_gate": int(below_gate.sum().item()),
++            "fraction_below_gate": float(below_gate.float().mean().item()),
++            "top1_mismatches": int((~top1_match).sum().item()),
++            "top1_agreement_fraction": float(top1_match.float().mean().item()),
++            "cosine_quantiles": _quality_quantiles(cosine),
++            "relative_l2_quantiles": _quality_quantiles(relative_l2),
++            "maximum_absolute_error_quantiles": _quality_quantiles(
++                maximum_absolute_error
++            ),
++            "failure_clusters": _consecutive_failure_clusters(below_gate),
++        },
++        "per_request": per_request,
++        "per_page_offset": per_page_offset,
++        "worst_rows": worst_rows,
++        "row_matrices": {
++            "cosine_by_step_request": cosine.tolist(),
++            "relative_l2_by_step_request": relative_l2.tolist(),
++            "maximum_absolute_error_by_step_request": (
++                maximum_absolute_error.tolist()
++            ),
++            "top1_match_by_step_request": top1_match.tolist(),
++            "reference_l2_by_step_request": reference_norm.tolist(),
++            "candidate_l2_by_step_request": candidate_norm.tolist(),
++        },
++    }
++
++
+ def compare_tokens(expected: torch.Tensor, observed: torch.Tensor) -> dict[str, Any]:
+     if expected.shape != observed.shape or expected.ndim != 2:
+         raise ValueError("token tensors must be matching [steps,B]")
+@@ -1215,6 +1544,22 @@
+     hf_tokens_tensor = torch.stack(hf_generated)
+     hf_vs_graph_logits = compare_logits(hf_logits_tensor, graph["logits"])
+     hf_vs_graph_tokens = compare_tokens(hf_tokens_tensor, graph["generated_tokens"])
++    quality_outlier_diagnostics = None
++    if args.quality_diagnostics_top_k:
++        print(
++            "Building posthoc strict-quality outlier localization report...",
++            flush=True,
++        )
++        quality_outlier_diagnostics = diagnose_logit_outliers(
++            hf_logits_tensor,
++            graph["logits"],
++            input_tokens=teacher_inputs,
++            start_position=args.context,
++            exact_tail_tokens=args.exact_tail,
++            minimum_cosine=args.min_logits_cosine,
++            top_rows=args.quality_diagnostics_top_k,
++            top_vocab=args.quality_diagnostics_top_vocab,
++        )
+     finalization = runtime_finalization_consumption(
+         decoder, args.context, args.decode_steps
+     )
+@@ -1382,6 +1727,8 @@
+         "warmups": args.warmups,
+         "repeats": args.repeats,
+         "cache_scrub_mib": args.cache_scrub_mib,
++        "quality_diagnostics_top_k": args.quality_diagnostics_top_k,
++        "quality_diagnostics_top_vocab": args.quality_diagnostics_top_vocab,
+     }
+     pairing_configuration = {
+         key: config[key]
+@@ -1573,6 +1920,7 @@
+                 "exact_tokens_required": args.trajectory_mode == GREEDY_FEEDBACK,
+                 "minimum_logits_cosine": args.min_logits_cosine,
+                 "minimum_top1_agreement": args.min_top1_agreement,
++                "outlier_diagnostics": quality_outlier_diagnostics,
+             },
+             "runtime_page_finalization_and_consumption": finalization,
+             "hashes": {
+--- /dev/null	2026-08-18 06:41:29.978141653 +0000
++++ diagnostics/analyze_quality_outliers.py	2026-08-18 06:50:34.897168902 +0000
+@@ -0,0 +1,239 @@
++#!/usr/bin/env python3
++"""Render PageGauge's posthoc strict-quality outlier diagnostics as Markdown.
++
++This analyzer performs no GPU work and does not recompute or relax any gate. It
++only summarizes the ``outlier_diagnostics`` payload emitted by
++``benchmark_sustained_dynamic_graphs.py --quality-diagnostics-top-k K``.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++from pathlib import Path
++from typing import Any
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--input", type=Path, required=True)
++    parser.add_argument("--output", type=Path)
++    parser.add_argument("--rows", type=int, default=24)
++    return parser.parse_args()
++
++
++def percent(value: float) -> str:
++    return f"{100.0 * float(value):.4f}%"
++
++
++def markdown_table(headers: list[str], rows: list[list[Any]]) -> list[str]:
++    output = [
++        "| " + " | ".join(headers) + " |",
++        "| " + " | ".join("---" for _ in headers) + " |",
++    ]
++    for row in rows:
++        output.append("| " + " | ".join(str(value) for value in row) + " |")
++    return output
++
++
++def load_payload(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
++    result = json.loads(path.read_text(encoding="utf-8"))
++    try:
++        diagnostics = result["correctness"]["backend_vs_hf_sdpa_fp16"][
++            "outlier_diagnostics"
++        ]
++    except (KeyError, TypeError) as error:
++        raise SystemExit(
++            "input lacks outlier diagnostics; rerun the worker with "
++            "--quality-diagnostics-top-k K"
++        ) from error
++    if not isinstance(diagnostics, dict):
++        raise SystemExit("outlier diagnostics are disabled or malformed")
++    return result, diagnostics
++
++
++def render(result: dict[str, Any], diagnostic: dict[str, Any], rows: int) -> str:
++    configuration = result["configuration"]
++    endpoint = result["correctness"]["backend_vs_hf_sdpa_fp16"]
++    summary = diagnostic["summary"]
++    quantiles = summary["cosine_quantiles"]
++
++    lines = [
++        "# PageGauge strict-quality outlier localization",
++        "",
++        "This is a posthoc diagnostic. It does **not** change the strict gate, "
++        "the model computation, or the timing path.",
++        "",
++        "## Run",
++        "",
++        f"- Backend: `{result['backend']}`",
++        f"- Trajectory: `{configuration['trajectory_mode']}`",
++        f"- Batch/context/decode: B={configuration['batch_size']}, "
++        f"C={configuration['context']}, D={configuration['decode_steps']}",
++        f"- Exact tail: {configuration['exact_tail_tokens']} tokens",
++        f"- Strict cosine threshold: {endpoint['minimum_logits_cosine']}",
++        f"- Worker pass: `{result['passed']}`",
++        "",
++        "## Global localization",
++        "",
++        f"- Checked rows: {summary['checked_rows']}",
++        f"- Rows below strict gate: {summary['rows_below_gate']} "
++        f"({percent(summary['fraction_below_gate'])})",
++        f"- Top-1 mismatches: {summary['top1_mismatches']}",
++        f"- Top-1 agreement: {percent(summary['top1_agreement_fraction'])}",
++        f"- Cosine minimum / p1 / p5 / median: "
++        f"{quantiles['minimum']:.9f} / {quantiles['p1']:.9f} / "
++        f"{quantiles['p5']:.9f} / {quantiles['median']:.9f}",
++        "",
++        "## Per request",
++        "",
++    ]
++    lines.extend(
++        markdown_table(
++            [
++                "Request",
++                "Min cosine",
++                "Min step",
++                "Absolute position",
++                "Below gate",
++                "Top-1 mismatches",
++            ],
++            [
++                [
++                    row["request"],
++                    f"{row['minimum_cosine']:.9f}",
++                    row["minimum_step"],
++                    row["minimum_absolute_position"],
++                    row["rows_below_gate"],
++                    row["top1_mismatches"],
++                ]
++                for row in diagnostic["per_request"]
++            ],
++        )
++    )
++
++    failing_offsets = [
++        row
++        for row in diagnostic["per_page_offset"]
++        if row["rows_below_gate"] or row["top1_mismatches"]
++    ]
++    lines.extend(["", "## Page offsets containing failures", ""])
++    if failing_offsets:
++        lines.extend(
++            markdown_table(
++                ["Offset", "Rows", "Min cosine", "Below gate", "Top-1 mismatch"],
++                [
++                    [
++                        row["page_offset"],
++                        row["rows"],
++                        f"{row['minimum_cosine']:.9f}",
++                        row["rows_below_gate"],
++                        row["top1_mismatches"],
++                    ]
++                    for row in failing_offsets
++                ],
++            )
++        )
++    else:
++        lines.append("No page offset contains a below-gate row.")
++
++    lines.extend(["", "## Consecutive failure clusters", ""])
++    clusters = summary["failure_clusters"]
++    if clusters:
++        lines.extend(
++            markdown_table(
++                ["Request", "Start", "End", "Length"],
++                [
++                    [
++                        cluster["request"],
++                        cluster["start_step"],
++                        cluster["end_step_inclusive"],
++                        cluster["length"],
++                    ]
++                    for cluster in clusters
++                ],
++            )
++        )
++    else:
++        lines.append("No below-threshold clusters were found.")
++
++    retained = diagnostic["worst_rows"][: max(0, rows)]
++    lines.extend(["", f"## Worst {len(retained)} request-step rows", ""])
++    lines.extend(
++        markdown_table(
++            [
++                "Rank",
++                "Step",
++                "Req",
++                "Pos",
++                "Off",
++                "Runtime INT8 pages",
++                "Cosine",
++                "Rel-L2",
++                "Max abs",
++                "Top-1",
++                "Ref margin",
++                "Cand margin",
++            ],
++            [
++                [
++                    row["rank"],
++                    row["step"],
++                    row["request"],
++                    row["absolute_position"],
++                    row["page_offset"],
++                    row["generated_int8_pages_visible"],
++                    f"{row['cosine']:.9f}",
++                    f"{row['relative_l2']:.6f}",
++                    f"{row['maximum_absolute_error']:.6f}",
++                    (
++                        f"{row['reference_top1_id']}={row['candidate_top1_id']}"
++                        if row["top1_match"]
++                        else f"{row['reference_top1_id']}≠{row['candidate_top1_id']}"
++                    ),
++                    f"{row['reference_top1_margin']:.5f}",
++                    f"{row['candidate_top1_margin']:.5f}",
++                ]
++                for row in retained
++            ],
++        )
++    )
++
++    lines.extend(
++        [
++            "",
++            "## How to interpret the next decision",
++            "",
++            "- Failures concentrated at one page offset suggest append/finalization "
++            "or boundary-sensitive attention behavior.",
++            "- Failures beginning only after `generated_int8_pages_visible > 0` "
++            "implicate recurrently finalized pages rather than the initial prefix.",
++            "- A single request with isolated steps suggests content-dependent "
++            "quantization sensitivity; broad request/page clusters suggest a "
++            "systematic representation issue.",
++            "- Very small reference norms or tiny top-1 margins can make cosine or "
++            "argmax unusually sensitive, but they do not justify weakening the gate.",
++            "- This report localizes the rows; it does not by itself attribute the "
++            "error to K, V, a layer, or a quantization parameter.",
++            "",
++        ]
++    )
++    return "\n".join(lines)
++
++
++def main() -> None:
++    args = parse_args()
++    if args.rows <= 0:
++        raise SystemExit("--rows must be positive")
++    result, diagnostics = load_payload(args.input)
++    text = render(result, diagnostics, args.rows)
++    if args.output is not None:
++        args.output.parent.mkdir(parents=True, exist_ok=True)
++        args.output.write_text(text + "\n", encoding="utf-8")
++        print(args.output)
++    else:
++        print(text)
++
++
++if __name__ == "__main__":
++    main()
+--- /tmp/pagegauge_orig/tests/test_sustained_dynamic_graph_protocol.py	2026-08-18 06:47:23.949770806 +0000
++++ tests/test_sustained_dynamic_graph_protocol.py	2026-08-18 06:50:54.280698827 +0000
+@@ -40,6 +40,8 @@
+     assert args.context == 20480
+     assert args.candidate_split_pages == 256
+     assert args.trajectory_mode == MODULE.GREEDY_FEEDBACK
++    assert args.quality_diagnostics_top_k == 0
++    assert args.quality_diagnostics_top_vocab == 8
+ 
+ 
+ def test_scheduler_capacity_rejects_split128_without_clamping() -> None:
+@@ -197,6 +199,43 @@
+     ]
+ 
+ 
++def test_quality_outlier_diagnostic_localizes_rows_without_changing_gate() -> None:
++    steps, batch, vocab = 32, 2, 7
++    expected = torch.randn(steps, batch, vocab, generator=torch.Generator().manual_seed(7))
++    observed = expected.clone()
++    # One isolated page-close failure and one two-step content cluster.
++    observed[15, 1] = -expected[15, 1]
++    observed[20, 0] = expected[20, 0].roll(1)
++    observed[21, 0] = expected[21, 0].roll(1)
++    inputs = torch.arange(steps * batch, dtype=torch.long).view(steps, batch)
++
++    report = MODULE.diagnose_logit_outliers(
++        expected,
++        observed,
++        input_tokens=inputs,
++        start_position=20480,
++        exact_tail_tokens=256,
++        minimum_cosine=0.995,
++        top_rows=8,
++        top_vocab=4,
++    )
++
++    assert report["threshold_unchanged"] == 0.995
++    assert report["summary"]["rows_below_gate"] == 3
++    assert report["worst_rows"][0]["step"] == 15
++    assert report["worst_rows"][0]["request"] == 1
++    assert report["worst_rows"][0]["page_offset"] == 15
++    assert report["worst_rows"][0]["is_page_close"] is True
++    assert report["worst_rows"][0]["generated_int8_pages_visible"] == 0
++    assert report["summary"]["failure_clusters"] == [
++        {"request": 0, "start_step": 20, "end_step_inclusive": 21, "length": 2},
++        {"request": 1, "start_step": 15, "end_step_inclusive": 15, "length": 1},
++    ]
++    offset_15 = report["per_page_offset"][15]
++    assert offset_15["rows_below_gate"] == 1
++    assert len(report["row_matrices"]["cosine_by_step_request"]) == steps
++
++
+ def test_short_sustained_protocol_is_rejected_before_execution(
+     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+ ) -> None:
+--- /dev/null	2026-08-18 06:41:29.978141653 +0000
++++ NEXT_EXPERIMENT.md	2026-08-18 06:53:04.204714431 +0000
+@@ -0,0 +1,150 @@
++# PageGauge next experiment: strict-quality outlier localization v1
++
++## Question
++
++The systems path, same-backend eager/graph equivalence, cache mutation,
++page-finalization, and sustained speed smoke already pass. The remaining
++failure is the preregistered worst-row HF-vs-PageGauge logit-cosine gate.
++
++This experiment does **not** change the threshold, quantizer, exact window,
++kernel, graph boundary, or timing protocol. It localizes the original
++`exact_tail=256, D=512` failures before another representation change is made.
++
++The diagnostic records:
++
++- every `[decode step, request]` cosine, relative-L2, maximum absolute error,
++  top-1 match, and reference/candidate logit norm;
++- the lowest-cosine rows with token IDs, top logits, top-1 margins, page offset,
++  and the number of runtime-generated pages already visible through INT8;
++- per-request minima;
++- per-page-offset failure counts;
++- consecutive below-threshold clusters.
++
++The strict endpoint remains:
++
++```text
++minimum logit cosine >= 0.995
++and top-1 agreement >= 0.80
++```
++
++The new report is posthoc evidence only. Do not use latency from this diagnostic
++as the paper timing result.
++
++## Apply the overlay
++
++Extract the supplied overlay ZIP at the existing PageGauge repository root,
++allowing it to replace the two existing files and add the new analyzer and this
++instruction file.
++
++Expected changed/new files:
++
++```text
++diagnostics/benchmark_sustained_dynamic_graphs.py
++diagnostics/analyze_quality_outliers.py
++tests/test_sustained_dynamic_graph_protocol.py
++NEXT_EXPERIMENT.md
++pagegauge_quality_outlier_localization_v1.patch
++```
++
++## Preflight in WSL
++
++```bash
++cd /mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090
++
++export TORCH_EXTENSIONS_DIR="$PWD/build/torch_extensions_rtx5090"
++export MAX_JOBS=4
++
++python -m py_compile \
++  diagnostics/benchmark_sustained_dynamic_graphs.py \
++  diagnostics/analyze_quality_outliers.py \
++  tests/test_sustained_dynamic_graph_protocol.py
++
++pytest -q tests/test_sustained_dynamic_graph_protocol.py
++```
++
++The focused suite should pass before the GPU run.
++
++## Run the next GPU experiment
++
++Use a new output directory and the already validated configuration that
++reproduced the original six low-cosine rows:
++
++```bash
++cd /mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090
++
++export TORCH_EXTENSIONS_DIR="$PWD/build/torch_extensions_rtx5090"
++export MAX_JOBS=4
++
++mkdir -p results/quality_outlier_localization_v1
++
++python diagnostics/benchmark_sustained_dynamic_graphs.py \
++  --backend page_gauge \
++  --model mistralai/Mistral-7B-v0.3 \
++  --batch-size 4 \
++  --context 20480 \
++  --decode-steps 512 \
++  --exact-tail 256 \
++  --prefill-chunk-tokens 1024 \
++  --candidate-split-pages 256 \
++  --tail-attention flashinfer_merge \
++  --trajectory-mode frozen_hf_teacher_forced \
++  --seed 20260861 \
++  --token-source wikitext2 \
++  --warmups 0 \
++  --repeats 1 \
++  --quality-diagnostics-top-k 64 \
++  --quality-diagnostics-top-vocab 12 \
++  --output results/quality_outlier_localization_v1/page_gauge_tail256_d512_seed20260861.json \
++  2>&1 | tee results/quality_outlier_localization_v1/page_gauge_tail256_d512_seed20260861.log
++```
++
++A nonzero process exit is expected if the unchanged strict quality gate still
++fails. The JSON should still be preserved. Do not rerun merely because the
++worker reports `passed=false`.
++
++## Render the compact report
++
++```bash
++python diagnostics/analyze_quality_outliers.py \
++  --input results/quality_outlier_localization_v1/page_gauge_tail256_d512_seed20260861.json \
++  --output results/quality_outlier_localization_v1/page_gauge_tail256_d512_seed20260861_outliers.md \
++  --rows 32
++
++sed -n '1,240p' \
++  results/quality_outlier_localization_v1/page_gauge_tail256_d512_seed20260861_outliers.md
++```
++
++## Bundle only the files needed for review
++
++```bash
++cd results/quality_outlier_localization_v1
++
++python -m zipfile -c page_gauge_quality_outlier_results_seed20260861.zip \
++  page_gauge_tail256_d512_seed20260861.json \
++  page_gauge_tail256_d512_seed20260861_outliers.md \
++  page_gauge_tail256_d512_seed20260861.log
++
++sha256sum page_gauge_quality_outlier_results_seed20260861.zip
++```
++
++Share that result ZIP.
++
++## Decision after the result
++
++1. **Failures occur before any runtime-generated page becomes INT8**
++   (`generated_int8_pages_visible == 0`): focus on the initial-prefix
++   representation, centers/scales, and K-vs-V contribution. Increasing the
++   recent generated-token tail is not the right remedy.
++2. **Failures begin only after generated pages age into INT8**: trace runtime
++   page finalization and recurrent quantization first.
++3. **Failures concentrate at one page offset**: run a boundary-specific append
++   and attention-state trace.
++4. **One request contains isolated failures with normal logit norms and large
++   top-1 margins**: run targeted layer-by-layer and K-only/V-only attribution
++   on those exact rows.
++5. **Failures have unusually low logit norms or tiny top-1 margins**: document
++   the geometry, but do not weaken the gate. The next experiment still needs to
++   determine where the distribution error enters.
++
++Do not run the four-seed publication ABBA grid until this localization is
++reviewed.

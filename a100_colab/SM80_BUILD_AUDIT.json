@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "purpose": "host-side SM80 cross-compilation evidence; not A100 runtime or timing evidence",
+  "build_host": "NVIDIA GeForce RTX 5090",
+  "target": {
+    "torch_cuda_arch_list": "8.0+PTX",
+    "flashinfer_cuda_arch_list": "8.0",
+    "compute_capability": [8, 0]
+  },
+  "selected_attention_module": {
+    "uri": "page_gauge_int8_fa2_v4_decea28f78424760",
+    "compiled_shared_object_sha256": "2cd4aa6047f162daa9e3c88509597ecaad47073239e05d99b88debb33058b9e6",
+    "cuobjdump_elf_entries": 10,
+    "all_entries": "sm_80.cubin"
+  },
+  "append_and_finalize_module": {
+    "compiled_shared_object_sha256": "3baf29b0660d060e2535dc46d431ab6e72b6116114812382d189c882e3389fc9",
+    "cuobjdump_elf_entries": 1,
+    "all_entries": "sm_80.cubin",
+    "source_sha256": "493927b1bff6837a5966efe3ceb76561b2825c0d90dc3489fd33986b222b41e9"
+  },
+  "source": {
+    "flashinfer_patch_sha256": "c79cbf9d6b9634e5027f8fe9720195cca343ffaf99f2c30c662fdb95f325f518",
+    "kernel_driver_sha256": "fee9b8a9f37907e8b9cdedb4349abcbcba49052541c30c80572844b86ae5b0cd",
+    "runtime_loader_sha256": "ccdd81f817ecae792dc5f481913b406a113b6f898073c5c4f384c782e8da22e6",
+    "patched_flashinfer_header_sha256": "db0684241566d79bbbf5d48e8219d29dc21f6d5d2fdd57b059d5fbafd49aee54"
+  },
+  "runtime_note": "The SM80 cubins cannot execute on the SM120 build host; actual execution, correctness, and timing are intentionally delegated to the fail-closed A100 Colab gates. Compiled binaries are excluded from the release archive."
+}

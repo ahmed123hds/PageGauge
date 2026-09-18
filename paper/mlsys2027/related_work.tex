@@ -1,0 +1,44 @@
+% Full-manuscript component; not included in the separate evidence-only PDF.
+\section{Related Work and Scope}
+\paragraph{Cache representations.}
+KIVI chooses different quantization axes for keys and values
+\citep{liu2024kivi}. KVQuant combines key-axis and pre-RoPE choices with
+nonuniform formats and separate outlier treatment \citep{hooper2024kvquant}.
+NSNQuant uses normalization, centering, a Hadamard transform and a reusable
+vector codebook \citep{son2025nsnquant}; Kitty dynamically increases precision
+for selected key channels and provides a corresponding packed runtime
+\citep{xia2026kitty}. These methods address representation fidelity and cost
+through different constraints. PageGauge's scalar page/head affine format is
+not a claim that INT8, centering or exact residual regions are new. Its larger
+effective storage must be compared with native low-bit policies, rather than
+only with FP16.
+
+\paragraph{Algebra and execution.}
+FlashAttention combines tiled attention with online normalization
+\citep{dao2022flashattention}; that streaming mechanism is infrastructure,
+not a PageGauge novelty claim. BitDecoding coordinates low-bit cache decoding
+with tensor-core execution \citep{du2026bitdecoding}, providing a native
+low-bit systems comparator rather than only an FP16 storage baseline.
+CommVQ already co-designs vector codebooks with RoPE commutativity to integrate
+cache decoding into attention \citep{li2025commvq}. Consequently, the broad
+idea of exploiting attention algebra to avoid a separate reconstruction stage
+is not sufficient to distinguish PageGauge. The narrower object here is
+common-center cancellation, page/head scalar corrections around code-valued
+contractions, and composition with centered exact regions. A matched control
+must isolate those corrections: our scale-placement contrast does not isolate
+shared-center cancellation and cannot explain all FlashInfer-relative speed.
+
+\paragraph{Systems denominators.}
+FlashInfer provides customizable paged attention and dynamic scheduling
+\citep{ye2025flashinfer}; it is infrastructure used by both our reference and
+candidate paths, not a slow stand-in for an optimized implementation. QServe
+jointly changes weights, activations and KV precision \citep{lin2025qserve}.
+Its full-system gains therefore answer a different question from a KV-only
+change with fixed FP16 weights. Kernel latency, complete decoding steps,
+memory-enabled batch throughput and full-request serving should remain
+separate measurements. Our native-model adapters and distinct Transformers
+stacks are disclosed rather than pooled as an identical engine.
+
+% Before main submission, extend this section with verified AQUA-KV, rotation,
+% additional attention-kernel and directly overlapping 2026 references.
+% This is a verified starting component, not an exhaustive novelty audit.

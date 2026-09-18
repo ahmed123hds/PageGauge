@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "experiment": "page_gauge_mlsys_2027_experiment_matrix",
+  "models": [
+    {
+      "model_id": "mistral_7b_v03",
+      "hf_id": "mistralai/Mistral-7B-v0.3",
+      "revision": "caa1feb0e54d415e2df31207e5f4e273e33509b1",
+      "revision_status": "pinned",
+      "family": "mistral",
+      "maximum_context_tokens": 32768
+    },
+    {
+      "model_id": "llama_31_8b_instruct",
+      "hf_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "revision": "TO_PIN_BEFORE_RUN",
+      "revision_status": "to_pin",
+      "family": "llama",
+      "maximum_context_tokens": 131072
+    },
+    {
+      "model_id": "qwen_25_7b_instruct",
+      "hf_id": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "TO_PIN_BEFORE_RUN",
+      "revision_status": "to_pin",
+      "family": "qwen",
+      "maximum_context_tokens": 131072
+    }
+  ],
+  "hardware": [
+    {
+      "hardware_id": "a100_sxm4_40gb",
+      "display_name": "NVIDIA A100-SXM4-40GB",
+      "compute_capability": [8, 0],
+      "minimum_memory_gib": 39.0,
+      "availability_status": "available"
+    },
+    {
+      "hardware_id": "h100_sxm_80gb",
+      "display_name": "NVIDIA H100-SXM-80GB",
+      "compute_capability": [9, 0],
+      "minimum_memory_gib": 79.0,
+      "availability_status": "to_secure"
+    },
+    {
+      "hardware_id": "rtx_5090",
+      "display_name": "NVIDIA GeForce RTX 5090",
+      "compute_capability": [12, 0],
+      "minimum_memory_gib": 31.0,
+      "availability_status": "available"
+    }
+  ],
+  "methods": [
+    {
+      "method_id": "flashinfer_fp16",
+      "comparison_class": "controlled",
+      "implementation_status": "ready"
+    },
+    {
+      "method_id": "page_gauge_explicit_reconstruction",
+      "comparison_class": "controlled",
+      "implementation_status": "planned"
+    },
+    {
+      "method_id": "page_gauge_fused_reconstruction",
+      "comparison_class": "controlled",
+      "implementation_status": "planned"
+    },
+    {
+      "method_id": "page_gauge_factorized",
+      "comparison_class": "controlled",
+      "implementation_status": "ready"
+    },
+    {
+      "method_id": "bitdecoding",
+      "comparison_class": "published_system",
+      "implementation_status": "planned"
+    },
+    {
+      "method_id": "qserve",
+      "comparison_class": "published_system",
+      "implementation_status": "planned"
+    },
+    {
+      "method_id": "kivi",
+      "comparison_class": "published_system",
+      "implementation_status": "planned"
+    },
+    {
+      "method_id": "kitty",
+      "comparison_class": "published_system",
+      "implementation_status": "planned"
+    }
+  ],
+  "suites": [
+    {
+      "suite_id": "controlled_factorization_common",
+      "priority": "P0",
+      "phase": "controlled_factorization",
+      "runner_status": "planned",
+      "models": ["mistral_7b_v03", "llama_31_8b_instruct", "qwen_25_7b_instruct"],
+      "hardware": ["a100_sxm4_40gb", "h100_sxm_80gb", "rtx_5090"],
+      "methods": ["flashinfer_fp16", "page_gauge_explicit_reconstruction", "page_gauge_fused_reconstruction", "page_gauge_factorized"],
+      "contexts": [4096, 16384, 32768],
+      "batch_sizes": [1, 4, 8],
+      "decode_steps": [256, 1024],
+      "workloads": ["synthetic_fixed_shape"],
+      "fresh_process_replicates": 2
+    },
+    {
+      "suite_id": "serving_slo_common",
+      "priority": "P0",
+      "phase": "serving",
+      "runner_status": "planned",
+      "models": ["mistral_7b_v03", "llama_31_8b_instruct", "qwen_25_7b_instruct"],
+      "hardware": ["a100_sxm4_40gb", "h100_sxm_80gb", "rtx_5090"],
+      "methods": ["flashinfer_fp16", "page_gauge_factorized", "bitdecoding", "qserve"],
+      "contexts": [4096, 16384, 32768],
+      "batch_sizes": [1, 4, 8],
+      "decode_steps": [256, 1024, 4096],
+      "workloads": ["sharegpt", "controlled_uniform", "bursty_long_generation"],
+      "fresh_process_replicates": 2
+    },
+    {
+      "suite_id": "quality_common_32k",
+      "priority": "P0",
+      "phase": "quality",
+      "runner_status": "planned",
+      "models": ["mistral_7b_v03", "llama_31_8b_instruct", "qwen_25_7b_instruct"],
+      "hardware": ["h100_sxm_80gb"],
+      "methods": ["flashinfer_fp16", "page_gauge_factorized", "bitdecoding", "kivi", "kitty"],
+      "contexts": [32768],
+      "batch_sizes": [1],
+      "decode_steps": [4096],
+      "workloads": ["longbench_v2", "ruler", "longgenbench", "pg19", "gsm8k", "math500", "gpqa_diamond", "humaneval"],
+      "fresh_process_replicates": 1
+    },
+    {
+      "suite_id": "quality_long_context",
+      "priority": "P1",
+      "phase": "quality",
+      "runner_status": "planned",
+      "models": ["llama_31_8b_instruct", "qwen_25_7b_instruct"],
+      "hardware": ["h100_sxm_80gb"],
+      "methods": ["flashinfer_fp16", "page_gauge_factorized", "bitdecoding"],
+      "contexts": [65536, 131072],
+      "batch_sizes": [1],
+      "decode_steps": [4096, 16384],
+      "workloads": ["longbench_v2", "ruler", "longgenbench"],
+      "fresh_process_replicates": 1
+    },
+    {
+      "suite_id": "hardware_profile_common",
+      "priority": "P1",
+      "phase": "hardware_profile",
+      "runner_status": "planned",
+      "models": ["mistral_7b_v03"],
+      "hardware": ["a100_sxm4_40gb", "h100_sxm_80gb", "rtx_5090"],
+      "methods": ["flashinfer_fp16", "page_gauge_explicit_reconstruction", "page_gauge_fused_reconstruction", "page_gauge_factorized"],
+      "contexts": [4096, 16384, 32768],
+      "batch_sizes": [1, 4, 8],
+      "decode_steps": [256, 1024],
+      "workloads": ["nsight_compute_fixed_shape"],
+      "fresh_process_replicates": 2
+    }
+  ]
+}
+

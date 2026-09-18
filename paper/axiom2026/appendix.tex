@@ -1,0 +1,291 @@
+\section{Extended Derivation and Assumptions}
+
+Fix a request, transformer layer, and KV head. Let
+$q\in\mathbb R^{1\times d}$, $c_K,c_V\in\mathbb R^d$,
+$Z_p^K,Z_p^V\in\mathbb Z^{n_p\times d}$, and
+$\mathbf1_p\in\mathbb R^{n_p}$. The centers are shared across every token in
+the complete attention domain. Quantized page $p$ is represented by
+\[
+\widehat K_p=\mathbf1_pc_K^\top+s_p^KZ_p^K,\qquad
+\widehat V_p=\mathbf1_pc_V^\top+s_p^VZ_p^V,
+\]
+with scalar $s_p^K,s_p^V$ over the page/head tile. Equation~\eqref{eq:quantizer}
+is the exact construction: initial-prefill FP32 means are cast to FP16 and
+frozen; each page uses the stored FP16 max-absolute scale with floor $2^{-20}$,
+round-half-away-from-zero, and clipping to $[-127,127]$. Runtime-appended pages
+reuse the same frozen center. Exact tokens are stored in centered form
+$K'_E=K_E-\mathbf1_Ec_K^\top$ and $V'_E=V_E-\mathbf1_Ec_V^\top$. Define
+\[
+\widetilde K=\operatorname{concat}(\{s_p^KZ_p^K\}_{p\in\Q},K'_E),\quad
+\widetilde V=\operatorname{concat}(\{s_p^VZ_p^V\}_{p\in\Q},V'_E).
+\]
+Then $\widehat K=\mathbf 1c_K^\top+\widetilde K$ and
+$\widehat V=\mathbf 1c_V^\top+\widetilde V$. For one query,
+\[
+\operatorname{softmax}\!\left((q\widehat K^\top)/\sqrt d\right)
+=\operatorname{softmax}\!\left((q\widetilde K^\top)/\sqrt d\right)
+\]
+because $(qc_K)/\sqrt d$ is common to every logit. If the resulting row vector
+is $P$, then
+\[
+P\widehat V=P\mathbf1c_V^\top+P\widetilde V
+=c_V^\top+\sum_{p\in\Q}s_p^VP_pZ_p^V+P_EV'_E,
+\]
+where $P_p$ and $P_E$ are subvectors of the globally normalized probability
+row. The claim fails if centers differ between independently evaluated segments and
+their offsets are not carried into the global merge. It also requires scalar
+page/head scales for its cheap correction. Per-channel scales can also be
+factored algebraically, but require page-specific channel-wise query transforms
+or output corrections and do not yield one scalar correction per fragment.
+
+For segment $j$, let $a_{j,i}$ be its centered scores and
+$\widetilde v_{j,i}$ its centered values. Stable online softmax stores
+\[
+m_j=\max_i a_{j,i},\qquad
+\ell_j=\sum_i e^{a_{j,i}-m_j},\qquad
+o_j=\sum_i e^{a_{j,i}-m_j}\widetilde v_{j,i}.
+\]
+The associative merge is
+\[
+m=\max_jm_j,\quad
+\ell=\sum_je^{m_j-m}\ell_j,\quad
+o=\sum_je^{m_j-m}o_j,\qquad O=o/\ell+c_V^\top.
+\]
+This is the same real-arithmetic result as a single centered softmax over the
+concatenated domain. FlashInfer's split-K merge supplies the same stable-state
+structure; the final production path exposes two logical attention segments.
+Its key scale is applied after each score fragment, while its value scale
+multiplies the probability fragment before the $PZ_p^V$ contraction.
+
+\section{Quantization Error Versus Execution Error}
+
+Two comparisons must not be conflated:
+\begin{enumerate}
+\item \textbf{Quantization error:} original FP16 $(K,V)$ versus reconstructed
+$(\widehat K,\widehat V)$.
+\item \textbf{Factorization/execution error:} explicit FP16 attention over the
+reconstructed cache versus the factorized PageGauge execution.
+\end{enumerate}
+The proposition eliminates the second in real arithmetic. GPU kernels can
+still differ through FP16 conversion, rounding, accumulation order, split-K
+partitioning, or the location of scalar multiplication.
+
+The explicit-reconstruction diagnostic uses nine old-only, exact-only,
+boundary, and ring-wrap cases, each under automatic, fixed-2, and fixed-8 split
+settings. All 27 cases pass. Across candidate versus reconstructed FP16 FA2,
+maximum absolute output error is $6.1035\times10^{-5}$, minimum cosine is
+0.999999821, maximum relative $\ell_2$ is $4.2093\times10^{-4}$, and maximum LSE
+absolute error is $9.8705\times10^{-5}$. All 18 cross-split comparisons pass.
+This artifact exercises an experimental heterogeneous wrapper, so we use it as
+a development diagnostic of the algebra and implementation pattern, not as a
+speed result for the final segmented system. The final full-decoder blocks add
+same-backend eager-versus-graph bitwise logits/cache checks, while the separate
+quality cohort measures quantization plus recurrence end to end.
+
+\section{Final Precision Policy and Byte Accounting}
+
+At the endpoint, each request represents 22,016 tokens in 1,376 pages of 16.
+The fixed policy is:
+\begin{itemize}
+\item exact prefix: pages 0--3, 64 tokens;
+\item quantized original history: pages 4--1151;
+\item static exact prefill suffix: pages 1152--1279, 2,048 tokens;
+\item runtime-appended pages aged into INT8: pages 1280--1327, 768 tokens;
+\item exact recent tail: pages 1328--1375, 768 tokens.
+\end{itemize}
+Thus 1,196/1,376 pages, or 86.9186\% of the represented logical history, are
+quantized at the endpoint. The exact logical fraction is 13.0814\%. The exact
+regions are a robustness allocation, not a novelty claim.
+
+For one page/head with $P=16$, $d=128$, and $b=8$, FP16 K+V costs
+$4Pd=8,192$ bytes. INT8 codes cost $2Pd=4,096$ bytes, plus two FP16 scalar
+scales (4 bytes); centers are shared across pages. The implementation does not
+compact away code/scale storage for exact pages. The raw served-cache tensors,
+excluding one following-canary page, are:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Tensor class & Bytes & Note \\
+\midrule
+Exact K & 754,974,720 & 180 pages/request \\
+Exact V & 754,974,720 & 180 pages/request \\
+K codes & 2,885,681,152 & gross 1,376 pages/request \\
+V codes & 2,885,681,152 & gross 1,376 pages/request \\
+K scales & 2,818,048 & served pages only \\
+V scales & 2,818,048 & served pages only \\
+Centers/output center & 1,572,864 & request/layer/head tensors \\
+\midrule
+\method{} served total & 7,288,520,704 & authoritative geometry \\
+FlashInfer FP16 total & 11,542,724,608 & authoritative geometry \\
+\bottomrule
+\end{tabular}
+\end{center}
+The source allocation includes a following canary and therefore prints
+7,292,719,104 bytes before subtracting 4,198,400 canary bytes. PageGauge saves
+4,254,203,904 bytes (3.962 GiB), a 36.8562\% reduction
+and 1.58369$\times$ KV-cache capacity at a fixed KV-memory budget.
+
+\section{Predictive-Quality Protocol and Adaptive Disclosure}
+
+The original source-frozen selection was S3/T768 with SHA-256
+\texttt{D1C8675B3B1F70437023DC8CD56665EA79602AAF6EDA2752717C0CEBC127798F}.
+Its preregistered TEST shard failed the minimum-cosine gate. Diagnostics found a
+separate HF-conversion numerical mismatch and, after repairing it, a residual
+PageGauge quantization error amplified across layers. The final S4/A128/T768
+policy was chosen after inspecting exposed TEST behavior. We therefore do not
+describe the final six-window result as untouched held-out selection.
+
+The final fixed-policy confirmation uses six disjoint WikiText-2 raw TEST
+windows at offsets 0, 23,600, 47,200, 70,800, 94,400, and 118,000. Each window
+contributes 1,536 labeled logit vectors, for 9,216 total. The reducer resamples six
+whole windows, not tokens, for 50,000 draws. All PageGauge/FlashInfer gates pass:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Metric & Estimate & Gate \\
+\midrule
+Minimum cosine & 0.9987073 & $\ge0.995$ \\
+Top-1 agreement & 0.9989149 & $\ge0.99$ \\
+Top-1 lower 95\% & 0.9986979 & $\ge0.98$ \\
+PPL-ratio bootstrap upper 95\% & 1.0001982 & $\le1.01$ \\
+Maximum window PPL ratio & 1.0002579 & $\le1.03$ \\
+Mean forward-KL upper 95\% & $8.09\times10^{-6}$ & $\le10^{-3}$ \\
+Forward-KL p99 & $6.05\times10^{-5}$ & $\le10^{-2}$ \\
+Mean JS upper 95\% & $2.02\times10^{-6}$ & $\le2.5\times10^{-4}$ \\
+JS p99 & $1.51\times10^{-5}$ & $\le2.5\times10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+FlashInfer/HF SDPA also passes its tighter gates. Each run executes 96 page
+closures per request and verifies that the oldest 48 runtime-appended pages are
+present in the INT8 attention domain.
+
+\paragraph{External-corpus confirmation.}
+Before reading book bytes or metrics, we froze the unchanged S4/A128/T768
+protocol and the lexicographically first six official PG-19 TEST objects of at
+least 200,000 bytes. Each book contributes a 20,480-token prefix and 1,536
+labels; PG-19 was not used during \method{} development or policy selection.
+Across 9,216 vectors, minimum cosine is 0.9992310, top-1 is 0.9982639, its
+whole-book bootstrap lower 95\% bound is 0.9977214, and the PPL-ratio upper
+95\% bound is 1.0000263. Forward-KL/JS p99 are $7.06\times10^{-5}$ and
+$1.76\times10^{-5}$; all unchanged gates, checksums, exact-region canaries,
+and 48-page runtime-INT8 recurrence checks pass. This establishes separation
+from the \method{} development corpus, not absence of Project Gutenberg from
+the base model's unknown pretraining mixture.
+
+\section{Fresh-Process Performance Protocol}
+
+The final performance experiment runs eight independent Python/CUDA processes.
+The first fixture/seed uses ABBA order; the second disjoint fixture/seed uses
+BAAB. Adjacent backend blocks form four pairs, and each block contains one
+warmup and three repeats. Each process loads the model and only its selected
+backend cache; load, prefill, graph capture, cache restoration, scrub, and
+preconditioning are excluded. The measured interval contains all 1,536
+continuous steps, 32 complete decoder-layer graph replays per step, page-table
+and FlashInfer planning updates, embedding, final norm, LM head, and GPU argmax.
+
+The primary estimand is
+\[
+\exp\left(\frac1{4}\sum_{i=1}^4\log\frac{t_{\mathrm{FI},i}}
+{t_{\mathrm{PG},i}}\right).
+\]
+The paired-block bootstrap resamples the four adjacent pairs. The hierarchical
+bootstrap first resamples the two fixture/seed clusters, then the two pairs
+within each selected cluster. Both use 50,000 draws. Cache-neutral wall results
+are:
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Quantity & Value \\
+\midrule
+FlashInfer geometric mean & 17.231814 ms/step \\
+PageGauge geometric mean & 15.214065 ms/step \\
+Speedup & 1.132624$\times$ \\
+Paired-block 95\% CI & [1.132358, 1.132788] \\
+Hierarchical 95\% CI & [1.132340, 1.132797] \\
+AB order stratum & 1.132496$\times$ \\
+BA order stratum & 1.132752$\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Cache-hot wall speedup is 1.132693$\times$ with hierarchical 95\% CI
+[1.132086, 1.133083]. The narrow intervals describe these two fixtures and
+their repeat chronology; they do not establish cross-workload uncertainty.
+
+Performance execution and predictive quality are assessed separately. The final
+analyzer requires every same-backend eager/graph replay, cache, page-table,
+canary, recurrence, source, and shared-identity gate; all eight performance
+execution gates pass. Predictive fidelity comes from the independent six-window
+B1 full-distribution aggregate rather than from the B4 timing fixtures.
+
+\section{Development Diagnostics and Negative Evidence}
+
+Several results are deliberately excluded from headline evidence. A
+co-resident full-model experiment held both full caches near device capacity
+and showed an artificial late-layer slowdown; fresh allocation/relocation
+removed the cliff. A heterogeneous two-node attention wrapper matched launch
+count but was 5--8\% slower than the segmented attention microbenchmark, so it
+was not selected. Earlier backend-exclusive and split-256 full-decoder pilots
+did not exceed the 1.1$\times$ target. Fixed-window graph experiments were
+diagnostic upper bounds because their absolute positions were not reusable for
+sustained serving. None of these numbers enters Table 1.
+
+Layer diagnostics were used only to understand quality failures. They showed
+that small local quantization deviations can be amplified by later residual
+blocks. This observation motivates robustness allocation but does not prove
+that the final exact prefix, static suffix, or tail is universally optimal.
+
+\section{Artifact Ledger}
+
+\begin{tabular}{p{0.30\linewidth}p{0.64\linewidth}}
+\toprule
+Artifact & SHA-256 \\
+\midrule
+Final quality aggregate &
+\texttt{\seqsplit{7adbbdc36f14c985004fe22349087210427f3831ee52d92e5a537667c81a64f9}} \\
+PG-19 external quality aggregate &
+\texttt{\seqsplit{35a10df9ccc70deb8efd01fb249d820040c100928bc706188bc6fbef3d8518fb}} \\
+Final performance analysis &
+\texttt{\seqsplit{42c3553e3c652601c0fabacb6e59f430fb5589ff5f927c440592d72e584a19fc}} \\
+Explicit-reconstruction diagnostic &
+\texttt{\seqsplit{20c64fc5b9413a6888287a0c8e6ae29fa2fafbd1c307d6e2d5ef51ea49db367d}} \\
+Original source-frozen selection &
+\texttt{\seqsplit{d1c8675b3b1f70437023dc8cd56665ea79602aaf6eda2752717c0cebc127798f}} \\
+Final performance analyzer source &
+\texttt{\seqsplit{82049fdd00b48cd5f56d9bfd511b3f4b1aa8ddd1fa45f1e20efb7855af60b3a5}} \\
+\bottomrule
+\end{tabular}
+
+\section{Existing Assets and Licenses}
+
+The evaluated \href{https://huggingface.co/mistralai/Mistral-7B-v0.3}
+{Mistral-7B-v0.3} checkpoint is Apache-2.0. The
+\href{https://huggingface.co/datasets/Salesforce/wikitext}{Salesforce WikiText}
+metadata lists CC BY-SA 3.0 and GFDL for WikiText-2/103. PG-19 is released by
+Google DeepMind under Apache-2.0 \citep{rae2019compressive}. FlashInfer 0.6.17 is
+\href{https://github.com/flashinfer-ai/flashinfer}{Apache-2.0}, and PyTorch is
+distributed under its \href{https://github.com/pytorch/pytorch/blob/main/LICENSE}
+{BSD-style license}. We use these assets for evaluation and kernel execution,
+retain their attribution and frozen versions in the manifest, and do not
+redistribute model or dataset contents in the paper artifact.
+
+\section{Limitations Expanded}
+
+The algebraic identity applies whenever its center and scalar-scale assumptions
+hold, but the implementation evidence is one Mistral-7B configuration on one
+RTX 5090/SM120. We have not established transfer to other architectures,
+models, batch sizes, or context regimes. Code values are converted into FP16
+register arithmetic; low-bit tensor-core accumulation is not claimed. Exact
+regions consume 1.406 GiB of FP16 K+V in the final cache, and gross INT8 storage
+for those pages is retained. The PG-19 confirmation supports corpus transfer,
+but the quality policy was repaired after TEST exposure and therefore remains
+adaptively selected. We compare with optimized FP16 FlashInfer but not directly
+with an optimized low-bit KV system such as BitDecoding or InnerQ. Finally, the timing path is a complete decoder with
+device-dynamic graph banks and real page planning, but it omits multi-tenant
+request scheduling, networking, memory admission, and prefill latency.
+
+\paragraph{LLM assistance.}
+LLM-based coding assistance was used for implementation support, protocol
+auditing, and manuscript editing. It was not treated as experimental evidence:
+reported values are bound to deterministic reducers, frozen artifacts, source
+hashes, and explicit human-reviewable acceptance gates.

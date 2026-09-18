@@ -1,0 +1,362 @@
+[
+  {
+    "task": "niah_single_1",
+    "context_length": 8192,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 21.87,
+    "kv_cache_mb": 1024.0
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 25.18,
+    "kv_cache_mb": 564.6
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 23.0,
+    "kv_cache_mb": 692.4
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 8192,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 15.9,
+    "kv_cache_mb": 1024.0
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 21.81,
+    "kv_cache_mb": 564.6
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 25.06,
+    "kv_cache_mb": 692.4
+  },
+  {
+    "task": "vt",
+    "context_length": 8192,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 19.79,
+    "kv_cache_mb": 1024.0
+  },
+  {
+    "task": "vt",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 21.36,
+    "kv_cache_mb": 564.6
+  },
+  {
+    "task": "vt",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 23.54,
+    "kv_cache_mb": 692.4
+  },
+  {
+    "task": "cwe",
+    "context_length": 8192,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 91.25,
+    "mean_latency_ms": 14.96,
+    "kv_cache_mb": 1024.0
+  },
+  {
+    "task": "cwe",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 91.25,
+    "mean_latency_ms": 23.67,
+    "kv_cache_mb": 564.6
+  },
+  {
+    "task": "cwe",
+    "context_length": 8192,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 91.25,
+    "mean_latency_ms": 22.43,
+    "kv_cache_mb": 692.4
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 16384,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 17.58,
+    "kv_cache_mb": 2048.0
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 22.58,
+    "kv_cache_mb": 1077.1
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 24.58,
+    "kv_cache_mb": 1204.9
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 16384,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 16.75,
+    "kv_cache_mb": 2048.0
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 22.86,
+    "kv_cache_mb": 1077.1
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 100.0,
+    "mean_latency_ms": 23.91,
+    "kv_cache_mb": 1204.9
+  },
+  {
+    "task": "vt",
+    "context_length": 16384,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 19.31,
+    "kv_cache_mb": 2048.0
+  },
+  {
+    "task": "vt",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 21.92,
+    "kv_cache_mb": 1077.1
+  },
+  {
+    "task": "vt",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 25.0,
+    "mean_latency_ms": 25.83,
+    "kv_cache_mb": 1204.9
+  },
+  {
+    "task": "cwe",
+    "context_length": 16384,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 8,
+    "accuracy": 93.75,
+    "mean_latency_ms": 17.13,
+    "kv_cache_mb": 2048.0
+  },
+  {
+    "task": "cwe",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 8,
+    "accuracy": 93.75,
+    "mean_latency_ms": 24.42,
+    "kv_cache_mb": 1077.1
+  },
+  {
+    "task": "cwe",
+    "context_length": 16384,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 8,
+    "accuracy": 93.75,
+    "mean_latency_ms": 24.27,
+    "kv_cache_mb": 1204.9
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 32768,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 17.91,
+    "kv_cache_mb": 4096.0
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 21.13,
+    "kv_cache_mb": 2102.1
+  },
+  {
+    "task": "niah_single_1",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 23.08,
+    "kv_cache_mb": 2229.9
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 32768,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 16.99,
+    "kv_cache_mb": 4096.0
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 22.31,
+    "kv_cache_mb": 2102.1
+  },
+  {
+    "task": "niah_multikey_2",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 4,
+    "accuracy": 100.0,
+    "mean_latency_ms": 21.54,
+    "kv_cache_mb": 2229.9
+  },
+  {
+    "task": "vt",
+    "context_length": 32768,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 4,
+    "accuracy": 35.0,
+    "mean_latency_ms": 16.54,
+    "kv_cache_mb": 4096.0
+  },
+  {
+    "task": "vt",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 4,
+    "accuracy": 35.0,
+    "mean_latency_ms": 23.56,
+    "kv_cache_mb": 2102.1
+  },
+  {
+    "task": "vt",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 4,
+    "accuracy": 35.0,
+    "mean_latency_ms": 22.12,
+    "kv_cache_mb": 2229.9
+  },
+  {
+    "task": "cwe",
+    "context_length": 32768,
+    "system_id": "flashinfer_fp16",
+    "system_name": "FlashInfer FP16",
+    "num_samples": 4,
+    "accuracy": 60.0,
+    "mean_latency_ms": 15.79,
+    "kv_cache_mb": 4096.0
+  },
+  {
+    "task": "cwe",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a0",
+    "system_name": "PageGauge INT8 (S4/A0/T768)",
+    "num_samples": 4,
+    "accuracy": 60.0,
+    "mean_latency_ms": 19.58,
+    "kv_cache_mb": 2102.1
+  },
+  {
+    "task": "cwe",
+    "context_length": 32768,
+    "system_id": "page_gauge_s4_a128",
+    "system_name": "PageGauge INT8 (S4/A128/T768)",
+    "num_samples": 4,
+    "accuracy": 60.0,
+    "mean_latency_ms": 22.28,
+    "kv_cache_mb": 2229.9
+  }
+]

@@ -1,0 +1,24 @@
+diff --git a/src/kitty/kvcache/kernels/kitty_quant_pack.py b/src/kitty/kvcache/kernels/kitty_quant_pack.py
+--- a/src/kitty/kvcache/kernels/kitty_quant_pack.py
++++ b/src/kitty/kvcache/kernels/kitty_quant_pack.py
+@@ -67,7 +67,7 @@
+         + pid_b * idx_stride_b
+         + pid_h * idx_stride_h
+         + pid_page * idx_stride_page
+-        + offs_d * idx_stride_d)   # [D]
++        + offs_d * idx_stride_d).to(tl.int32)   # Widen before byte-offset multiplication.
+     boost_mask = dense_sparse_idx < D_BOOST   # uint8 to bool, [D], if true → boost to int4
+ 
+     # Computing the quantization parameters
+diff --git a/src/kitty/kvcache/kernels/kitty_attention.py b/src/kitty/kvcache/kernels/kitty_attention.py
+--- a/src/kitty/kvcache/kernels/kitty_attention.py
++++ b/src/kitty/kvcache/kernels/kitty_attention.py
+@@ -138,7 +138,7 @@
+         ######################## load quantized K_page ########################
+         cache_base = kcache_ptr + page_id * kcache_stride_p + pid_h_kv * K_STRIDE_H_KV
+         # Loading dense to sparse index
+-        boost_idx = tl.load(cache_base + K_OFF_IDX + offs_d)  # [D], uint8
++        boost_idx = tl.load(cache_base + K_OFF_IDX + offs_d).to(tl.int32)  # Avoid uint8 byte-offset overflow.
+         boost_mask = boost_idx < D_BOOST    # [D], bool
+         # Loading low 2-bits INT2
+         x_uint8_low = tl.load(

@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "experiment": "pagegauge_mlsys2027_controlled_decoder",
+  "status": "design",
+  "design": {
+    "treatment_labels": {"A": "baseline", "B": "candidate"},
+    "seed_orders": ["ABBA", "BAAB"],
+    "experimental_unit": "adjacent fresh-process treatment pair",
+    "bootstrap_hierarchy": ["seed_fixture", "adjacent_pair"],
+    "warmup_full_sequences": 1,
+    "measured_full_sequences": 3,
+    "timing_modes": ["cache_neutral", "cache_hot"],
+    "timing_metrics": ["wall_ms", "cuda_ms"]
+  },
+  "policy": {
+    "page_size_tokens": 16,
+    "historical_kv_dtype": "int8",
+    "metadata_dtype": "fp16",
+    "exact_prefix_pages": 4,
+    "static_exact_prefill_suffix_pages": 128,
+    "exact_recent_tail_tokens": 768,
+    "policy_name": "S4/A128/T768"
+  },
+  "model": {
+    "model_id": "mistral_7b_v03",
+    "repo_id": "mistralai/Mistral-7B-v0.3",
+    "revision": "caa1feb0e54d415e2df31207e5f4e273e33509b1",
+    "revision_status": "pinned"
+  },
+  "hardware": {
+    "a100_sxm4_40gb": {
+      "family": "NVIDIA A100-SXM4-40GB",
+      "compute_capability": [8, 0],
+      "minimum_memory_gib": 39.0,
+      "availability_status": "available"
+    },
+    "h100_sxm_80gb": {
+      "family": "NVIDIA H100-SXM-80GB",
+      "compute_capability": [9, 0],
+      "minimum_memory_gib": 79.0,
+      "availability_status": "to_secure"
+    },
+    "rtx_5090": {
+      "family": "NVIDIA GeForce RTX 5090",
+      "compute_capability": [12, 0],
+      "minimum_memory_gib": 31.0,
+      "availability_status": "available"
+    }
+  },
+  "methods": {
+    "flashinfer_fp16": {"implementation_status": "ready"},
+    "page_gauge_explicit_reconstruction": {"implementation_status": "planned"},
+    "page_gauge_fused_reconstruction": {"implementation_status": "planned"},
+    "page_gauge_factorized": {"implementation_status": "ready"}
+  },
+  "cells": [
+    {"cell_id": "anchor_a100_pg_vs_fp16", "hardware_id": "a100_sxm4_40gb", "baseline": "flashinfer_fp16", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_a100_pg_vs_explicit", "hardware_id": "a100_sxm4_40gb", "baseline": "page_gauge_explicit_reconstruction", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_a100_pg_vs_fused", "hardware_id": "a100_sxm4_40gb", "baseline": "page_gauge_fused_reconstruction", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_h100_pg_vs_fp16", "hardware_id": "h100_sxm_80gb", "baseline": "flashinfer_fp16", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_h100_pg_vs_explicit", "hardware_id": "h100_sxm_80gb", "baseline": "page_gauge_explicit_reconstruction", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_h100_pg_vs_fused", "hardware_id": "h100_sxm_80gb", "baseline": "page_gauge_fused_reconstruction", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_rtx5090_pg_vs_fp16", "hardware_id": "rtx_5090", "baseline": "flashinfer_fp16", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_rtx5090_pg_vs_explicit", "hardware_id": "rtx_5090", "baseline": "page_gauge_explicit_reconstruction", "candidate": "page_gauge_factorized"},
+    {"cell_id": "anchor_rtx5090_pg_vs_fused", "hardware_id": "rtx_5090", "baseline": "page_gauge_fused_reconstruction", "candidate": "page_gauge_factorized"}
+  ],
+  "workload": {
+    "batch_size": 4,
+    "prefix_tokens": 20480,
+    "decode_tokens": 1536,
+    "forced_decode": true,
+    "seeds": [20260861, 20260862],
+    "pairs_per_seed": 2,
+    "minimum_closed_generated_pages": 96,
+    "minimum_runtime_created_pages_later_consumed_int8": 48
+  },
+  "gates": {
+    "factorized_vs_reconstruction_speedup_lower_95": 1.05,
+    "factorized_vs_fp16_speedup_lower_95": 1.05,
+    "central_cell_speedup_target": 1.10,
+    "all_execution_gates_required": true,
+    "all_subunit_cells_reported": true
+  }
+}

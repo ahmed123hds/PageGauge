@@ -1,0 +1,593 @@
+--- a/flashinfer/attention/prefill.cuh
++++ b/flashinfer/attention/prefill.cuh
+@@ -56,6 +56,10 @@
+ DEFINE_HAS_MEMBER(v_affine_scale)
+ DEFINE_HAS_MEMBER(k_page_scale)
+ DEFINE_HAS_MEMBER(v_page_scale)
++DEFINE_HAS_MEMBER(exact_k_cache)
++DEFINE_HAS_MEMBER(exact_v_cache)
++DEFINE_HAS_MEMBER(old_kv_len)
++DEFINE_HAS_MEMBER(value_center)
+ 
+ // Type trait to detect packed NVFP4 KV cache types (__nv_fp4x2_e2m1 stores 2 FP4 per byte).
+ template <typename T>
+@@ -681,6 +685,121 @@
+   }
+ }
+ 
++// PageGauge's heterogeneous decode path time-shares one native-half staging
++// tile between K and V.  CTA16 INT8 kernels do not otherwise allocate the
++// repack buffer, so their adjacent INT8 K and V arrays provide exactly the
++// bytes required by one half tile.  Larger-Q kernels already own the native
++// repack buffer and use it directly.  This accessor is instantiated only for
++// Params carrying exact_k_cache/exact_v_cache/old_kv_len.
++template <typename KTraits, typename SmemStorage>
++__device__ __forceinline__ typename KTraits::DTypeQ* heterogeneous_kv_smem_ptr(
++    SmemStorage* smem_storage) {
++  static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
++  static_assert(std::is_same_v<typename KTraits::DTypeKV, int8_t>);
++  static_assert(KTraits::SWIZZLE_MODE_KV == SwizzleMode::k128B);
++  if constexpr (KTraits::USE_KV_REPACK) {
++    return smem_storage->kv_smem_repack_ptr();
++  } else {
++    static_assert(!KTraits::USE_KV_SHARED_SMEM);
++    constexpr size_t kRequiredBytes =
++        KTraits::CTA_TILE_KV *
++        (KTraits::HEAD_DIM_QK > KTraits::HEAD_DIM_VO ? KTraits::HEAD_DIM_QK
++                                                     : KTraits::HEAD_DIM_VO) *
++        sizeof(typename KTraits::DTypeQ);
++    constexpr size_t kAvailableBytes =
++        sizeof(smem_storage->k_smem) + sizeof(smem_storage->v_smem);
++    static_assert(kRequiredBytes <= kAvailableBytes,
++                  "heterogeneous half tile does not fit K/V shared storage");
++    return reinterpret_cast<typename KTraits::DTypeQ*>(smem_storage->k_smem);
++  }
++}
++
++// Materialize one heterogeneous K or V tile in native FP16 shared memory.
++// Old rows are reconstructed from signed INT8 and one scale per page/head;
++// exact rows are copied bitwise from the FP16 ring.  The unified logical page
++// table uses code-page identifiers below old_kv_len and ring-page identifiers
++// at and above it.  Only boundary/exact tiles take this path: all-old tiles
++// retain PageGauge's factorized post-MMA scaling path.
++template <bool produce_v, typename KTraits, typename SmemStorage, typename Params>
++__device__ __forceinline__ void page_produce_heterogeneous_kv(
++    SmemStorage* smem_storage, const Params& params, const uint32_t request_idx,
++    const uint32_t kv_head_idx, const uint32_t logical_tile_start,
++    const uint32_t chunk_tile_offset, const uint32_t chunk_size,
++    const uint32_t warp_idx, const uint32_t lane_idx) {
++  static_assert(KTraits::HEAD_DIM_QK == 128 && KTraits::HEAD_DIM_VO == 128);
++  static_assert(KTraits::REPACK_STRIDE_QK == KTraits::REPACK_STRIDE_VO);
++  using DTypeQ = typename KTraits::DTypeQ;
++  using DTypeKV = typename KTraits::DTypeKV;
++  using IdType = typename KTraits::IdType;
++  constexpr uint32_t NUM_WARPS = KTraits::NUM_WARPS;
++  constexpr uint32_t NUM_WARPS_Q = KTraits::NUM_WARPS_Q;
++  constexpr uint32_t NUM_MMA_KV = KTraits::NUM_MMA_KV;
++  constexpr uint32_t NUM_MMA_D =
++      produce_v ? KTraits::NUM_MMA_D_VO : KTraits::NUM_MMA_D_QK;
++  constexpr uint32_t ROWS_PER_ITER = 4;
++  constexpr uint32_t HALF_VALUES_PER_VECTOR = upcast_size<DTypeQ>();
++  static_assert(HALF_VALUES_PER_VECTOR == 8);
++  static_assert(NUM_MMA_KV * ROWS_PER_ITER % NUM_WARPS_Q == 0);
++
++  const auto& paged_kv = params.paged_kv;
++  DTypeKV* old_cache = produce_v ? paged_kv.v_data : paged_kv.k_data;
++  DTypeQ* exact_cache = produce_v ? params.exact_v_cache : params.exact_k_cache;
++  half* page_scale = produce_v ? params.v_page_scale : params.k_page_scale;
++  const uint32_t old_length = static_cast<uint32_t>(__ldg(params.old_kv_len + request_idx));
++  smem_t<KTraits::SWIZZLE_MODE_KV> exact_smem(
++      heterogeneous_kv_smem_ptr<KTraits>(smem_storage));
++  uint32_t smem_offset = exact_smem.template get_permuted_offset<
++      KTraits::REPACK_STRIDE_QK>(warp_idx * KTraits::KV_THR_LAYOUT_ROW + lane_idx / 8,
++                                 lane_idx % 8);
++
++#pragma unroll
++  for (uint32_t i = 0; i < NUM_MMA_KV * ROWS_PER_ITER / NUM_WARPS_Q; ++i) {
++    const uint32_t logical_row =
++        warp_idx * ROWS_PER_ITER + lane_idx / 8 + NUM_WARPS * ROWS_PER_ITER * i;
++    const uint32_t chunk_row = chunk_tile_offset + logical_row;
++    const bool valid = chunk_row < chunk_size;
++    const uint32_t logical_token = logical_tile_start + logical_row;
++    IdType physical_page = 0;
++    uint32_t entry_idx = 0;
++    if (valid) {
++      uint32_t logical_page;
++      paged_kv.page_size.divmod(logical_token, logical_page, entry_idx);
++      physical_page = __ldg(paged_kv.indices + paged_kv.indptr[request_idx] + logical_page);
++    }
++
++#pragma unroll
++    for (uint32_t j = 0; j < NUM_MMA_D / 4; ++j) {
++      const uint32_t feature_idx =
++          (lane_idx % 8) * HALF_VALUES_PER_VECTOR + j * 8 * HALF_VALUES_PER_VECTOR;
++      b128_t staged = make_uint4(0, 0, 0, 0);
++      if (valid) {
++        const size_t element_offset =
++            paged_kv.get_elem_offset(physical_page, kv_head_idx, entry_idx, feature_idx);
++        if (logical_token < old_length) {
++          alignas(16) DTypeQ converted[HALF_VALUES_PER_VECTOR];
++          vec_cast<DTypeQ, DTypeKV>::template cast<HALF_VALUES_PER_VECTOR>(
++              converted, old_cache + element_offset);
++          const half2 scale2 = __half2half2(
++              page_scale[static_cast<size_t>(physical_page) * paged_kv.num_heads + kv_head_idx]);
++#pragma unroll
++          for (uint32_t packed = 0; packed < HALF_VALUES_PER_VECTOR / 2; ++packed) {
++            reinterpret_cast<half2*>(converted)[packed] =
++                __hmul2(reinterpret_cast<half2*>(converted)[packed], scale2);
++          }
++          staged = *reinterpret_cast<b128_t*>(converted);
++        } else {
++          staged = *reinterpret_cast<const b128_t*>(exact_cache + element_offset);
++        }
++      }
++      exact_smem.base[smem_offset] = staged;
++      smem_offset = exact_smem.template advance_offset_by_column<8>(smem_offset, j);
++    }
++    smem_offset = exact_smem.template advance_offset_by_row<
++                      NUM_WARPS * ROWS_PER_ITER, KTraits::REPACK_STRIDE_QK>(smem_offset) -
++                  sizeof(DTypeQ) * NUM_MMA_D;
++  }
++}
++
+ /*!
+  * \brief Load NVFP4 KV scale-factors for one CTA tile into shared memory.
+  *
+@@ -1712,34 +1831,6 @@
+     }
+   }
+ 
+-  // For V = scale_page * Z, move the scalar through the matrix product:
+-  // P @ V = (scale_page * P) @ Z.  d was accumulated from the unscaled
+-  // probabilities above, so only the value contribution is changed.
+-  if constexpr (PAGE_GAUGE) {
+-    static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
+-#pragma unroll
+-    for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+-      const uint32_t metadata_offset =
+-          static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
+-          affine_kv_head;
+-      const half2 scale2 = __half2half2(affine_scale[metadata_offset]);
+-#pragma unroll
+-      for (uint32_t mma_q = 0; mma_q < KTraits::NUM_MMA_Q; ++mma_q) {
+-#pragma unroll
+-        for (uint32_t packed = 0; packed < 4; ++packed) {
+-          if constexpr (std::is_same_v<typename KTraits::DTypeQKAccum, float>) {
+-            reinterpret_cast<half2*>(s_frag_f16[mma_q][mma_kv])[packed] =
+-                __hmul2(reinterpret_cast<half2*>(s_frag_f16[mma_q][mma_kv])[packed],
+-                         scale2);
+-          } else {
+-            reinterpret_cast<half2*>(s_frag[mma_q][mma_kv])[packed] =
+-                __hmul2(reinterpret_cast<half2*>(s_frag[mma_q][mma_kv])[packed], scale2);
+-          }
+-        }
+-      }
+-    }
+-  }
+-
+ #pragma unroll
+   for (uint32_t mma_kv = 0; mma_kv < KTraits::NUM_MMA_KV; ++mma_kv) {
+ #pragma unroll
+@@ -1764,7 +1855,22 @@
+           vec_cast<typename KTraits::DTypeQ, typename KTraits::DTypeKV>::cast<8>(
+               (typename KTraits::DTypeQ*)b_frag, (typename KTraits::DTypeKV*)b_frag_quant);
+           swap(b_frag[1], b_frag[2]);
+-          if constexpr (!PAGE_GAUGE) {
++          if constexpr (PAGE_GAUGE) {
++            // V = scale_page * Z.  Apply scale to the converted V fragment,
++            // not to diffuse FP16 softmax probabilities: P @ (scale*Z) is
++            // algebraically identical, while avoiding probability underflow
++            // for the ~1e-3 page scales observed in pretrained Mistral KV.
++            static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
++            const uint32_t metadata_offset =
++                static_cast<uint32_t>(affine_page_ids[mma_kv]) * affine_num_kv_heads +
++                affine_kv_head;
++            const half2 scale2 = __half2half2(affine_scale[metadata_offset]);
++#pragma unroll
++            for (uint32_t packed = 0; packed < 4; ++packed) {
++              *reinterpret_cast<half2*>(&b_frag[packed]) =
++                  __hmul2(*reinterpret_cast<half2*>(&b_frag[packed]), scale2);
++            }
++          } else {
+             if (affine_scale != nullptr) {
+               static_assert(std::is_same_v<typename KTraits::DTypeQ, half>);
+               const uint32_t metadata_offset =
+@@ -1850,13 +1956,14 @@
+   }
+ }
+ 
+-template <typename KTraits, typename Params>
++template <typename KTraits, typename Params, bool RESTORE_VALUE_CENTER = false>
+ __device__ __forceinline__ void transform_output(
+     const Params& params, typename KTraits::AttentionVariant variant,
+     float (*o_frag)[KTraits::NUM_MMA_D_VO_TILE][8], typename KTraits::DTypeQKAccum (*m)[2],
+     float (*d)[2], const uint32_t batch_idx, const uint32_t kv_tile_idx,
+     const uint32_t qo_packed_idx_base, const uint32_t warp_idx, const uint32_t lane_idx,
+-    uint32_t kv_head_idx, const uint_fastdiv group_size) {
++    uint32_t kv_head_idx, const uint_fastdiv group_size, const uint32_t d_base = 0) {
++  static_assert(!RESTORE_VALUE_CENTER || has_value_center_v<Params>);
+   uint32_t q[KTraits::NUM_MMA_Q][2], r[KTraits::NUM_MMA_Q][2];
+   float scale[KTraits::NUM_MMA_Q][2];
+ #pragma unroll
+@@ -1882,7 +1989,23 @@
+         const uint32_t qo_head_idx = kv_head_idx * group_size + r[mma_q][(reg_id % 4) / 2];
+         o_frag[mma_q][mma_d][reg_id] = variant.OutputTransform(
+             params, o_frag[mma_q][mma_d][reg_id], batch_idx, qo_idx, qo_head_idx,
+-            m[mma_q][(reg_id % 4) / 2], d[mma_q][(reg_id % 4) / 2], scale[mma_q][(reg_id % 4) / 2]);
++            m[mma_q][(reg_id % 4) / 2], d[mma_q][(reg_id % 4) / 2],
++            scale[mma_q][(reg_id % 4) / 2]);
++        // PageGauge stores both the old and exact V caches relative to one
++        // per-request/KV-head center.  Restore that center in every split
++        // partial.  FlashInfer's merge weights sum to one, so the final merged
++        // state contains exactly one copy without an extra CUDA launch.
++        if constexpr (RESTORE_VALUE_CENTER) {
++          const uint32_t feature_idx =
++              (d_base + mma_d) * 16 + (lane_idx % 4) * 2 + (reg_id & 1) +
++              (reg_id >= 4 ? 8 : 0);
++          const size_t center_offset =
++              (static_cast<size_t>(batch_idx) * gridDim.z + kv_head_idx) *
++                  KTraits::HEAD_DIM_VO +
++              feature_idx;
++          o_frag[mma_q][mma_d][reg_id] +=
++              __half2float(__ldg(params.value_center + center_offset));
++        }
+       }
+     }
+   }
+@@ -3198,9 +3321,10 @@
+         threadblock_sync_mdo_states<KTraits>(o_frag, &smem_storage, m, d, warp_idx, lane_idx, tid);
+ 
+         // transform output
+-        transform_output<KTraits, Params>(params, variant, o_frag, m, d, /*batch_idx=*/request_idx,
+-                                          kv_tile_idx, qo_packed_idx_base, warp_idx, lane_idx,
+-                                          kv_head_idx, group_size);
++        transform_output<KTraits, Params>(params, variant, o_frag, m, d,
++                                          /*batch_idx=*/request_idx, kv_tile_idx,
++                                          qo_packed_idx_base, warp_idx, lane_idx, kv_head_idx,
++                                          group_size);
+ 
+         // write back (o_ptr_base offset to this VO tile's columns: d_base mma * 16 elems)
+         write_o_reg_gmem<KTraits>(o_frag, &qo_smem, o_ptr_base + d_base * 16, qo_packed_idx_base,
+@@ -3586,6 +3710,26 @@
+     float* lse = params.lse;
+     bool* block_valid_mask = params.block_valid_mask;
+     const paged_kv_t<DTypeKV, IdType>& paged_kv = params.paged_kv;
++    constexpr bool PAGE_GAUGE_HETEROGENEOUS_ABI =
++        has_exact_k_cache_v<Params> && has_exact_v_cache_v<Params> &&
++        has_old_kv_len_v<Params> && has_value_center_v<Params>;
++    static_assert(
++        PAGE_GAUGE_HETEROGENEOUS_ABI ==
++            (has_exact_k_cache_v<Params> || has_exact_v_cache_v<Params> ||
++             has_old_kv_len_v<Params> || has_value_center_v<Params>),
++        "exact_k_cache, exact_v_cache, old_kv_len, and value_center must be supplied together");
++    // The first implementation is deliberately decode-only.  The JIT emits
++    // CTA64/CTA128 instantiations in the same module, but the Python ABI rejects
++    // Q lengths other than one and therefore selects CTA16 exclusively.
++    constexpr bool PAGE_GAUGE_HETEROGENEOUS =
++        PAGE_GAUGE_HETEROGENEOUS_ABI && KTraits::CTA_TILE_Q == 16;
++    if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++      static_assert(std::is_same_v<DTypeQ, half> && std::is_same_v<DTypeKV, int8_t> &&
++                    std::is_same_v<DTypeO, half> && std::is_same_v<IdType, int32_t>);
++      static_assert(HEAD_DIM_QK == 128 && HEAD_DIM_VO == 128);
++      static_assert(KTraits::POS_ENCODING_MODE == PosEncodingMode::kNone);
++      static_assert(!KTraits::USE_KV_SHARED_SMEM);
++    }
+     const bool partition_kv = params.partition_kv;
+     const uint_fastdiv& group_size = params.group_size;
+ 
+@@ -3771,11 +3915,19 @@
+         static_assert(UPCAST_STRIDE_K == UPCAST_STRIDE_V);
+       }
+ 
+-      // FP8 repack path
+-      smem_t<SWIZZLE_MODE_KV> k_smem_bf16(smem_storage.kv_smem_repack_ptr()),
+-          v_smem_bf16(smem_storage.kv_smem_repack_ptr());
+-      uint32_t k_smem_offset_r_bf16 = 0, v_smem_offset_r_bf16 = 0;
++      // Native-half staging is the FP8 repack buffer for the existing long-Q
++      // path.  The heterogeneous CTA16 path instead time-shares the adjacent
++      // INT8 K/V storage through heterogeneous_kv_smem_ptr().
++      DTypeQ* native_kv_smem_ptr = nullptr;
+       if constexpr (KTraits::USE_KV_REPACK) {
++        native_kv_smem_ptr = smem_storage.kv_smem_repack_ptr();
++      } else if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++        native_kv_smem_ptr = heterogeneous_kv_smem_ptr<KTraits>(&smem_storage);
++      }
++      smem_t<SWIZZLE_MODE_KV> k_smem_bf16(native_kv_smem_ptr),
++          v_smem_bf16(native_kv_smem_ptr);
++      uint32_t k_smem_offset_r_bf16 = 0, v_smem_offset_r_bf16 = 0;
++      if constexpr (KTraits::USE_KV_REPACK || PAGE_GAUGE_HETEROGENEOUS) {
+         k_smem_offset_r_bf16 = k_smem_bf16.template get_permuted_offset<KTraits::REPACK_STRIDE_QK>(
+             get_warp_idx_kv<KTraits>(tid.z) * NUM_MMA_KV * 16 + 8 * (lane_idx / 16) + lane_idx % 8,
+             (lane_idx % 16) / 8);
+@@ -3784,47 +3936,57 @@
+       }
+ 
+       const IdType last_indptr = paged_kv.indptr[paged_kv.batch_size];
++      uint32_t old_kv_length = kv_len;
++      if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++        old_kv_length = static_cast<uint32_t>(__ldg(params.old_kv_len + request_idx));
++      }
++      const bool initial_tile_is_old =
++          min(chunk_start + CTA_TILE_KV, chunk_end) <= old_kv_length;
+ 
+       uint32_t packed_page_iter_base =
+           paged_kv.indptr[request_idx] * paged_kv.page_size + chunk_start;
+-      if constexpr (KTraits::USE_KV_SHARED_SMEM) {
+-        page_produce_kv_on_the_fly<false, KTraits>(&smem_storage, &k_smem_offset_w, paged_kv.k_data,
+-                                                   paged_kv, packed_page_iter_base, last_indptr,
+-                                                   kv_head_idx, 0, chunk_size, warp_idx, lane_idx);
+-      } else {
++      if (initial_tile_is_old) {
++        if constexpr (KTraits::USE_KV_SHARED_SMEM) {
++          page_produce_kv_on_the_fly<false, KTraits>(
++              &smem_storage, &k_smem_offset_w, paged_kv.k_data, paged_kv,
++              packed_page_iter_base, last_indptr, kv_head_idx, 0, chunk_size, warp_idx, lane_idx);
++        } else {
+ #pragma unroll
+-        for (uint32_t i = 0;
+-             i < NUM_MMA_KV * (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q; ++i) {
+-          uint32_t page_iter, entry_idx;
+-          paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
+-                                        lane_idx / KV_THR_LAYOUT_COL +
+-                                        KV_THR_LAYOUT_ROW * NUM_WARPS_Q * NUM_WARPS_KV * i,
+-                                    page_iter, entry_idx);
+-          // FP4: GMEM is packed (2 FP4/byte), so the column byte offset is halved relative to fp8
+-          constexpr uint32_t fp4_pack_factor = is_fp4_type_v<DTypeKV> ? 2 : 1;
+-          thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
+-              page_iter, kv_head_idx, entry_idx,
+-              (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>() / fp4_pack_factor,
+-              last_indptr);
+-        }
+-        page_produce_kv<false, KTraits>(&smem_storage, &k_smem_offset_w, paged_kv.k_data, 0,
+-                                        thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
+-      }
+-      page_produce_kv_sf<false, KTraits>(
+-          &smem_storage, maybe_k_cache_sf, packed_page_iter_base,
+-          last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, k_sf_stride_page, k_sf_stride_h,
+-          k_sf_stride_n, paged_kv.page_size, paged_kv.indices, 0, chunk_size, warp_idx, lane_idx);
+-      cp_async::commit_group();
+-      // Shared K/V loads V(0) inside iter 0 after Q.K^T; preloading it would clobber K(0).
+-      if constexpr (!KTraits::USE_KV_SHARED_SMEM) {
+-        page_produce_kv<true, KTraits>(&smem_storage, &v_smem_offset_w, paged_kv.v_data, 0,
+-                                       thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
+-        page_produce_kv_sf<true, KTraits>(&smem_storage, maybe_v_cache_sf, packed_page_iter_base,
+-                                          last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx,
+-                                          v_sf_stride_page, v_sf_stride_h, v_sf_stride_n,
+-                                          paged_kv.page_size, paged_kv.indices, 0, chunk_size,
+-                                          warp_idx, lane_idx);
++          for (uint32_t i = 0;
++               i < NUM_MMA_KV * (SWIZZLE_MODE_KV == SwizzleMode::k128B ? 4 : 2) / NUM_WARPS_Q;
++               ++i) {
++            uint32_t page_iter, entry_idx;
++            paged_kv.page_size.divmod(packed_page_iter_base + warp_idx * KV_THR_LAYOUT_ROW +
++                                          lane_idx / KV_THR_LAYOUT_COL +
++                                          KV_THR_LAYOUT_ROW * NUM_WARPS_Q * NUM_WARPS_KV * i,
++                                      page_iter, entry_idx);
++            // FP4: GMEM is packed (2 FP4/byte), so the column byte offset is halved relative to fp8
++            constexpr uint32_t fp4_pack_factor = is_fp4_type_v<DTypeKV> ? 2 : 1;
++            thr_local_kv_offset[i] = paged_kv.protective_get_kv_offset(
++                page_iter, kv_head_idx, entry_idx,
++                (lane_idx % KV_THR_LAYOUT_COL) * upcast_size<DTypeKV>() / fp4_pack_factor,
++                last_indptr);
++          }
++          page_produce_kv<false, KTraits>(&smem_storage, &k_smem_offset_w, paged_kv.k_data, 0,
++                                          thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
++        }
++        page_produce_kv_sf<false, KTraits>(
++            &smem_storage, maybe_k_cache_sf, packed_page_iter_base,
++            last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, k_sf_stride_page,
++            k_sf_stride_h, k_sf_stride_n, paged_kv.page_size, paged_kv.indices, 0, chunk_size,
++            warp_idx, lane_idx);
+         cp_async::commit_group();
++        // Shared K/V loads V(0) inside iter 0 after Q.K^T; preloading it would clobber K(0).
++        if constexpr (!KTraits::USE_KV_SHARED_SMEM) {
++          page_produce_kv<true, KTraits>(&smem_storage, &v_smem_offset_w, paged_kv.v_data, 0,
++                                         thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
++          page_produce_kv_sf<true, KTraits>(
++              &smem_storage, maybe_v_cache_sf, packed_page_iter_base,
++              last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, v_sf_stride_page,
++              v_sf_stride_h, v_sf_stride_n, paged_kv.page_size, paged_kv.indices, 0, chunk_size,
++              warp_idx, lane_idx);
++          cp_async::commit_group();
++        }
+       }
+ 
+       uint32_t num_iterations_prefix;
+@@ -3894,6 +4056,17 @@
+                 : 0;
+         const uint32_t next_packed_page_iter_base =
+             packed_page_iter_base + (1 + prefetch_skip_step) * CTA_TILE_KV;
++        const uint32_t logical_tile_start = chunk_start + iter * CTA_TILE_KV;
++        const uint32_t next_logical_tile_start =
++            logical_tile_start + (1 + prefetch_skip_step) * CTA_TILE_KV;
++        bool tile_is_old = true;
++        bool next_tile_is_old = true;
++        if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++          tile_is_old = min(logical_tile_start + CTA_TILE_KV, chunk_end) <= old_kv_length;
++          next_tile_is_old =
++              next_logical_tile_start < chunk_end &&
++              min(next_logical_tile_start + CTA_TILE_KV, chunk_end) <= old_kv_length;
++        }
+         if constexpr (!KTraits::USE_KV_SHARED_SMEM) {
+           packed_page_iter_base = next_packed_page_iter_base;
+ #pragma unroll
+@@ -3917,9 +4090,25 @@
+         if constexpr (KTraits::USE_KV_SHARED_SMEM) {
+           cp_async::wait_group<0>();
+         } else {
+-          cp_async::wait_group<1>();
++          if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++            if (tile_is_old) {
++              cp_async::wait_group<1>();
++            } else {
++              cp_async::wait_group<0>();
++            }
++          } else {
++            cp_async::wait_group<1>();
++          }
+         }
+         block.sync();
++        if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++          if (!tile_is_old) {
++            page_produce_heterogeneous_kv<false, KTraits>(
++                &smem_storage, params, request_idx, kv_head_idx, logical_tile_start,
++                iter * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++            block.sync();
++          }
++        }
+ 
+         uint32_t kv_idx_base =
+             chunk_start + (iter * NUM_WARPS_KV + get_warp_idx_kv<KTraits>(tid.z)) * NUM_MMA_KV * 16;
+@@ -3960,6 +4149,23 @@
+               smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) * KTraits::NUM_MMA_KV *
+                                          16 * KTraits::NUM_MMA_D_QK),
+               lane_idx, kv_rope_base, rope_freq, s_frag);
++        } else if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++          if (tile_is_old) {
++            compute_qk<KTraits, /*REPACK_BF16=*/false, /*PAGE_GAUGE=*/true>(
++                &qo_smem, &q_smem_offset_r, &k_smem, &k_smem_offset_r,
++                smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_QK),
++                lane_idx, s_frag, nullptr, params.k_page_scale, affine_page_ids,
++                kv_head_idx, paged_kv.num_heads);
++          } else {
++            compute_qk<KTraits, /*REPACK_BF16=*/true>(
++                &qo_smem, &q_smem_offset_r, &k_smem_bf16, &k_smem_offset_r_bf16,
++                smem_storage.k_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_QK),
++                lane_idx, s_frag);
++          }
+         } else if constexpr (KTraits::USE_KV_REPACK) {
+           // Dequantize FP8 K -> BF16 staging smem (shuffle-free), then read native 16-bit.
+           repack_fp8_tile_to_bf16<KTraits, KTraits::HEAD_DIM_QK>(smem_storage.k_smem,
+@@ -4050,16 +4256,42 @@
+           cp_async::commit_group();
+           cp_async::wait_group<0>();
+         } else {
+-          page_produce_kv<false, KTraits>(&smem_storage, &k_smem_offset_w, paged_kv.k_data,
+-                                          (iter + 1) * CTA_TILE_KV, thr_local_kv_offset, chunk_size,
+-                                          warp_idx, lane_idx);
+-          page_produce_kv_sf<false, KTraits>(
+-              &smem_storage, maybe_k_cache_sf, packed_page_iter_base,
+-              last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, k_sf_stride_page,
+-              k_sf_stride_h, k_sf_stride_n, paged_kv.page_size, paged_kv.indices,
+-              (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
+-          cp_async::commit_group();
+-          cp_async::wait_group<1>();
++          if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++            if (tile_is_old) {
++              if (next_tile_is_old) {
++                page_produce_kv<false, KTraits>(
++                    &smem_storage, &k_smem_offset_w, paged_kv.k_data,
++                    (iter + 1) * CTA_TILE_KV, thr_local_kv_offset, chunk_size, warp_idx,
++                    lane_idx);
++                page_produce_kv_sf<false, KTraits>(
++                    &smem_storage, maybe_k_cache_sf, packed_page_iter_base,
++                    last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx,
++                    k_sf_stride_page, k_sf_stride_h, k_sf_stride_n, paged_kv.page_size,
++                    paged_kv.indices, (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++                cp_async::commit_group();
++                cp_async::wait_group<1>();
++              } else {
++                // No K(next) group exists to sit behind V(current), so drain
++                // V fully before its tensor-core consumption.
++                cp_async::wait_group<0>();
++              }
++            } else {
++              page_produce_heterogeneous_kv<true, KTraits>(
++                  &smem_storage, params, request_idx, kv_head_idx, logical_tile_start,
++                  iter * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++            }
++          } else {
++            page_produce_kv<false, KTraits>(
++                &smem_storage, &k_smem_offset_w, paged_kv.k_data, (iter + 1) * CTA_TILE_KV,
++                thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
++            page_produce_kv_sf<false, KTraits>(
++                &smem_storage, maybe_k_cache_sf, packed_page_iter_base,
++                last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, k_sf_stride_page,
++                k_sf_stride_h, k_sf_stride_n, paged_kv.page_size, paged_kv.indices,
++                (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++            cp_async::commit_group();
++            cp_async::wait_group<1>();
++          }
+         }
+         block.sync();
+ 
+@@ -4069,6 +4301,23 @@
+               get_warp_idx_kv<KTraits>(tid.z) * KTraits::NUM_MMA_D_VO_PER_WARP;
+           vosplit_compute_pv<KTraits>(&smem_storage, o_frag, o_scale, warp_vo_base,
+                                       get_warp_idx_q<KTraits>(tid.y), lane_idx);
++        } else if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++          if (tile_is_old) {
++            compute_sfm_v<KTraits, /*REPACK_BF16=*/false, /*PAGE_GAUGE=*/true>(
++                &v_smem, &v_smem_offset_r,
++                smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_VO),
++                lane_idx, s_frag, o_frag, d, d_base, nullptr, params.v_page_scale,
++                affine_page_ids, kv_head_idx, paged_kv.num_heads);
++          } else {
++            compute_sfm_v<KTraits, /*REPACK_BF16=*/true>(
++                &v_smem_bf16, &v_smem_offset_r_bf16,
++                smem_storage.v_sf_smem_ptr(get_warp_idx_kv<KTraits>(tid.z) *
++                                           KTraits::NUM_MMA_KV * 16 *
++                                           KTraits::NUM_MMA_D_VO),
++                lane_idx, s_frag, o_frag, d, d_base);
++          }
+         } else if constexpr (KTraits::USE_KV_REPACK) {
+           // Dequantize FP8 V -> BF16 staging smem (shuffle-free), then read native 16-bit.
+           repack_fp8_tile_to_bf16<KTraits, KTraits::HEAD_DIM_VO>(smem_storage.v_smem,
+@@ -4117,15 +4366,29 @@
+           cp_async::commit_group();
+           packed_page_iter_base = next_packed_page_iter_base;
+         } else {
+-          page_produce_kv<true, KTraits>(&smem_storage, &v_smem_offset_w, paged_kv.v_data,
+-                                         (iter + 1) * CTA_TILE_KV, thr_local_kv_offset, chunk_size,
+-                                         warp_idx, lane_idx);
+-          page_produce_kv_sf<true, KTraits>(
+-              &smem_storage, maybe_v_cache_sf, packed_page_iter_base,
+-              last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, v_sf_stride_page,
+-              v_sf_stride_h, v_sf_stride_n, paged_kv.page_size, paged_kv.indices,
+-              (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
+-          cp_async::commit_group();
++          if constexpr (PAGE_GAUGE_HETEROGENEOUS) {
++            if (tile_is_old && next_tile_is_old) {
++              page_produce_kv<true, KTraits>(
++                  &smem_storage, &v_smem_offset_w, paged_kv.v_data,
++                  (iter + 1) * CTA_TILE_KV, thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
++              page_produce_kv_sf<true, KTraits>(
++                  &smem_storage, maybe_v_cache_sf, packed_page_iter_base,
++                  last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, v_sf_stride_page,
++                  v_sf_stride_h, v_sf_stride_n, paged_kv.page_size, paged_kv.indices,
++                  (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++              cp_async::commit_group();
++            }
++          } else {
++            page_produce_kv<true, KTraits>(
++                &smem_storage, &v_smem_offset_w, paged_kv.v_data, (iter + 1) * CTA_TILE_KV,
++                thr_local_kv_offset, chunk_size, warp_idx, lane_idx);
++            page_produce_kv_sf<true, KTraits>(
++                &smem_storage, maybe_v_cache_sf, packed_page_iter_base,
++                last_indptr * (uint32_t)paged_kv.page_size, kv_head_idx, v_sf_stride_page,
++                v_sf_stride_h, v_sf_stride_n, paged_kv.page_size, paged_kv.indices,
++                (iter + 1) * CTA_TILE_KV, chunk_size, warp_idx, lane_idx);
++            cp_async::commit_group();
++          }
+         }
+       }
+       cp_async::wait_group<0>();
+@@ -4146,9 +4409,9 @@
+         threadblock_sync_mdo_states<KTraits>(o_frag, &smem_storage, m, d, warp_idx, lane_idx, tid);
+ 
+         // transform output
+-        transform_output<KTraits, Params>(params, variant, o_frag, m, d, /*batch_idx=*/request_idx,
+-                                          kv_tile_idx, qo_packed_idx_base, warp_idx, lane_idx,
+-                                          kv_head_idx, group_size);
++        transform_output<KTraits, Params, PAGE_GAUGE_HETEROGENEOUS>(
++            params, variant, o_frag, m, d, /*batch_idx=*/request_idx, kv_tile_idx,
++            qo_packed_idx_base, warp_idx, lane_idx, kv_head_idx, group_size, d_base);
+ 
+         // write_back (o_ptr_base offset to this VO tile's columns: d_base mma * 16 elems)
+         write_o_reg_gmem<KTraits>(o_frag, &qo_smem, o_ptr_base + d_base * 16, qo_packed_idx_base,

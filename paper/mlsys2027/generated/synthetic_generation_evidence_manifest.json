@@ -1,0 +1,21 @@
+{
+  "builder_sha256": "5cba45844cead756c9d84548570ba9e7be7502501eef8a056c82ba8cf410a4e0",
+  "input_sha256": {
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/analysis.json": "e85e293f95c82aba78846e49337ff2112d2725ba7c3c6b7956ec5e141c8f2e08",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/block_0_telemetry.json": "32c375aa260093ad1990ed82b4f43f5791dd0b1c5abf82421915dadc248cc3ba",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_0.json": "eacc0999ce31080640c54f89b2f814bfa5f3c55630d2b048e25e20f98c4d1204",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_1.json": "154cc0166cb294316c7508e89045371320e8688ff459fb12f1120ff59dc7f11b",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_2.json": "11cda93619d4e99ee5869cf2df629a6eedb97e34eb0f3c179cd8e1392ff6fc17",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_3.json": "8845a3c340eb09d733e21004f810ff310c3133cf73bb74e0b3b178bbd1bc7430",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_4.json": "28cf63217c7bc18c160608ee39d5ff2019b8cd0cfa64a38a2a3f3f5661f0532d",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/case_5.json": "778ff630a7a309adf8fa7f21f47bda5e65b1023fa2410ae60bdc43b597cfdf3d",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/completion.json": "3076cd57115723e33cf44bbcba2b83e4f87a637223b11d1df8919fbcb8fb0216",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/fixtures.json": "775b3a994866642961b032a946d3549bca4af75406be83b1dd625c29d76fe3e9",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/hf_generate_validation.json": "68da2cf2fdc866727ffb1154aa7b59d939e502f676ee9068991546f91faa4663",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_tasks_v1/synthetic_20260909T025247Z_a44bf775/manifest.json": "3c81207fbb4a77a2f1576db311451cd694f37574b039abacf8691fd7ba077df5"
+  },
+  "output_sha256": {
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/paper/mlsys2027/generated/synthetic_generation_summary.tex": "d51b44e06f089c9ea399a200af82263f636053be1d11d93fd2b1b74044f5dce9"
+  },
+  "scope": "Six synthetic development retrieval cases, two prompt budgets and three needle depths. Native nonthinking Qwen chat; independent greedy HF/FI/PG answers, first-case native-generate validation and selected PG same-cache execution probes. Fixed S4/A128/T768, exact32/history128. Not public benchmark TEST, task-suite quality, speed or generated-history aging evidence."
+}

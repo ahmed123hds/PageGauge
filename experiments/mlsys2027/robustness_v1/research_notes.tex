@@ -1,0 +1,156 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[hidelinks]{hyperref}
+\newtheorem{proposition}{Proposition}
+\title{PageGauge: Robustness Development Notes}
+\author{Internal research draft}
+\date{September 8, 2026}
+\begin{document}
+\maketitle
+\noindent\textbf{Status.} Proposed research foundations, not an assertion of
+novelty, new quality results, or a new fast kernel. The workshop baseline and
+the currently running experiment remain unchanged.
+
+\section{What the existing identity does and does not establish}
+Factoring affine metadata is exact in real arithmetic relative to the
+reconstructed cache. It does not recover information discarded by quantization.
+FP16 subtraction, multiplication, normalization, and accumulation introduce a
+separate execution discrepancy. A single-layer fixed-query statement is not a
+whole-model or autoregressive guarantee. ``Exact regions'' means an FP16 storage
+policy; subtracting a center in FP16 is itself rounded.
+
+\section{Separable affine representation}
+For one request and KV head, let $A_K,A_V\in\mathbb R^{d\times d}$ be invertible
+and shared across every page. Let $D_p^K,D_p^V$ be positive diagonal matrices of
+size $n_p$, and let the centers $c_K,c_V\in\mathbb R^d$ be shared over the full
+attention domain. Define
+\[
+ \widehat K_p=\mathbf1_pc_K^\top+D_p^K Z_p^K A_K,\qquad
+ \widehat V_p=\mathbf1_pc_V^\top+D_p^V Z_p^V A_V.
+\]
+The original page-scalar representation is $A_K=A_V=I$ and $D_p^X=s_p^X I$.
+Inversion is needed to encode arbitrary residuals in this basis; the following
+algebraic equality itself only requires conformable matrices.
+
+\begin{proposition}[Generalized factorization]
+For row query $q$, compute centered logits of page $p$ as
+\[
+ a_p=(qA_K^\top)(Z_p^K)^\top D_p^K/\sqrt d.
+\]
+Let $P$ be their globally normalized softmax and $P_p$ its page subvectors.
+Then attention over $(\widehat K,\widehat V)$ is
+\[
+ O=c_V^\top+\left(\sum_p (P_pD_p^V)Z_p^V\right)A_V.
+\]
+\end{proposition}
+\begin{proof}
+The omitted key term is $(qc_K/\sqrt d)\mathbf1^\top$, a common logit shift.
+It cancels under softmax. Substitute the value representation, use
+$P\mathbf1=1$, and distribute the shared right transform.
+\end{proof}
+If mixed exact tokens are retained, their centered keys and values participate
+in the same global normalization. To combine their values before the final
+$A_V$, represent the exact centered value as $(v-c_V^\top)A_V^{-1}$, or add its
+centered contribution after transforming the quantized contribution. In finite
+precision these choices have different rounding and cost. No free transformation
+or extra exactness is implied.
+
+\paragraph{Implementation constraints.}
+Row-dependent scales require row corrections, not a single scalar per fragment.
+Dense transforms cost arithmetic and can be ill-conditioned. Diagonal or
+structured orthogonal transforms are hypotheses to evaluate. A post-RoPE query
+transform generally cannot be folded into the pre-RoPE projection unless it
+commutes with RoPE or the positional transformation is adjusted equivalently.
+Value transforms may be foldable into corresponding output-projection blocks,
+but this must be verified for GQA and charged consistently to both baselines.
+
+\section{An attention-visible error bound}
+Fix a query $q$ and finite original/approximated caches with the same token set.
+Let $p=\mathrm{softmax}(qK^\top/\sqrt d)$, and define
+\[
+ e=q(\widehat K-K)^\top/\sqrt d,\quad
+ \epsilon_K=\min_a\|e-a\mathbf1^\top\|_\infty
+             ={\max_i e_i-\min_i e_i\over2},\quad
+ \epsilon_V=\max_i\|\widehat v_i-v_i\|_2.
+\]
+For any value center $c$, set $R=\max_i\|v_i-c\|_2$.
+\begin{proposition}[Fixed-query output perturbation]
+With real-arithmetic attention outputs $O$ and $\widehat O$,
+\[
+ \|\widehat O-O\|_2\le R\min\{2,\epsilon_K\}+\epsilon_V.
+\]
+\end{proposition}
+\begin{proof}
+For softmax Jacobian $J(p)$ and direction $h$,
+$\|J(p)h\|_1=\sum_i p_i|h_i-\mathbb E_p h|\le
+\sqrt{\operatorname{Var}_p(h)}\le\|h\|_\infty$.
+Integrating along the segment of logits gives the $\ell_\infty$-to-$\ell_1$
+Lipschitz constant one. Subtract a common shift from $e$ and use the trivial
+distance bound two for probability vectors, obtaining
+$\|\widehat p-p\|_1\le\min(2,\epsilon_K)$.
+Now write
+\[
+ \widehat O-O=(\widehat p-p)(V-\mathbf1c^\top)
+                 +\widehat p(\widehat V-V).
+\]
+The triangle inequality and nonnegative normalized weights finish the proof.
+\end{proof}
+This is a useful diagnostic bound, not asserted to be a novel result. It can be
+loose. Adding a measured execution discrepancy $\epsilon_{\rm exec}$ bounds
+the difference between a numerical implementation and the real-arithmetic
+reference by the right side plus $\epsilon_{\rm exec}$.
+
+\paragraph{First-order sensitivity.}
+For small perturbations at fixed $q$,
+\[
+ \delta O=\sum_i p_i\delta v_i+
+              \sum_i p_i(v_i-O)\delta a_i+O(\|\delta\|^2).
+\]
+Thus attention mass alone does not characterize sensitivity. Values far from
+the mean and score perturbations matter; raw cache MSE can mis-rank importance.
+
+\section{Conditional propagation, not a universal fidelity promise}
+For a fixed teacher-forced input chain, include the recurrent KV cache in the
+state. If the full-precision transition $F_t$ is $L_t$-Lipschitz on the relevant
+states and $\|\widehat F_t(x)-F_t(x)\|\le\eta_t$ there, then
+\[
+ e_{t+1}\le L_t e_t+\eta_t.
+\]
+This does not assume contraction. Query perturbations and prior-cache errors
+are part of the state; fixed-query attention bounds alone do not establish
+the $L_t$ or $\eta_t$. Free-running generation additionally requires controlling
+discrete token choices. A sufficient local condition for preserving a unique
+top-1 token is $\|\delta\mathrm{logits}\|_\infty<\gamma/2$, where $\gamma$ is the
+reference top-two logit margin. Cosine alone provides no such guarantee.
+
+\section{Performance and contribution boundary}
+If the affected attention fraction is $f$, its speedup is $r$, and added work
+is $h$ in units of baseline decoder time, then an illustrative cost model is
+\[
+ S_{\rm decoder}\approx[(1-f)+f/r+h]^{-1}.
+\]
+This is a model to validate with profiles, not a hardware-independent speed
+theorem. A target of 1.2--1.5$\times$ needs evidence on declared workloads.
+Quality should be assessed by predeclared non-inferiority criteria, not a claim
+that lossy compression must outperform its full-precision reference.
+
+\section{Related-work correction and primary sources}
+Rotations, attention-aware objectives, mixed precision, and common-shift
+invariance are not claimed as new individually. A conference contribution must
+establish a distinct representation/numerics/kernel combination and isolate its
+benefit against a matched fused reconstruction control.
+\begin{itemize}
+\item \href{https://arxiv.org/abs/2404.00456}{QuaRot}: rotation-based quantization.
+\item \href{https://arxiv.org/abs/2608.02691}{OptR}: output-aware rotation; August 2026 preprint.
+\item \href{https://arxiv.org/abs/2605.19660}{OScaR}: token-norm imbalance and scaled rotation; May 2026 preprint.
+\item \href{https://arxiv.org/abs/2503.18773}{BitDecoding}: optimized low-bit execution.
+\item \href{https://arxiv.org/abs/2402.02750}{KIVI}: asymmetric KV quantization, ICML 2024.
+\item \href{https://proceedings.mlsys.org/paper_files/paper/2026/hash/e4d8d1b5120be349d3fff8878650cf45-Abstract-Conference.html}{Kitty}: dynamic channel-wise precision boost, MLSys 2026.
+\item \href{https://arxiv.org/abs/2405.04532}{QServe}: W4A8KV4 system; not a KV-only comparison.
+\end{itemize}
+\noindent\textbf{Reference correction, checked September 8, 2026:}
+\href{https://arxiv.org/abs/2605.03562}{HeadQ} is withdrawn according to arXiv.
+Its empirical claims are not used as established support in this draft. This
+note does not silently alter the archived workshop artifact.
+\end{document}

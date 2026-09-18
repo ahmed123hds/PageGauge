@@ -1,0 +1,32 @@
+{
+  "builder_sha256": "2d774893df92da0f7d165f5b2eae5bb492be2d1d3bf0950ae54c77251bdded27",
+  "input_sha256": {
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/analysis.json": "5dc731a67d26471bfeadf92e65f48d140c837a786022207f42ceed47bdd94bca",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_0.json": "daf3b74e2a129cafc9d11073e856432bed847db94f8c0e53644de7f987b614e0",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_0.log": "88dcbe8785285e19269902e9966e502b4c643e44ea9f914d1dbfed4424f906e5",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_0_assessment.json": "2c683f6ee7ba1a167783b2598c3b9934aa9aec4dc3435dbf9635fa5e1d6d7def",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_0_completion.json": "ab1c687cc0bddd12233580e97844f290e211715e7ceabaa26785700b6c56bb4d",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_0_telemetry.json": "daefdba50d0e988451dc5d02e8d54a16cf85094351fd4777ec42b7d8b48ac945",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_1.json": "7c439f8f7d2d0c355421a3b498f1fb78514bad4bc951405436c6ad6301decff3",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_1.log": "660a470f1c7750742a7e4354ff130a3c16d60ca1fb58baff0eb835aaa8a467d5",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_1_assessment.json": "a8ba21f3d24eecee7994a727fbbbfd8afd80918bc374015e4eed3d7c13051c0c",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_1_completion.json": "587ff0cfcf00410bfe11e71136ad4f005add8a954c18d9e198e64b0061a34543",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_1_telemetry.json": "e94ad388b6b403b4731a1ff04ad0cb62510d5da1712aa519cdb5486346729df1",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_2.json": "c4cc5fb03ae08fadc4ff1a563945f224b3675e88e6473cba588a371bb964a308",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_2.log": "4ef42a4cced75848b8b8042479176c9925e47cd268c42b225c1eabb7c85d5e81",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_2_assessment.json": "5e38b5ff8550f12e41c9cd2425c49e76f2c6399a8429b47568fef8458d4c0c7f",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_2_completion.json": "113c5ef74764d333baba730f491bc5dd5e2effebf515e52aaa23fe9da08a19aa",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_2_telemetry.json": "b0016ff50b072326336d9f77287bfe3c04f62be47c40406a1b82d5ebd4439edc",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_3.json": "e0d943ade8524f33746c2d3ab0951ec95a28612a978fdb80454009fd4f49db0c",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_3.log": "1a4f41bf9777b71f0e8265ae429e643ef3c9d7e5576ece3c4b549a11d4879052",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_3_assessment.json": "802ba395b668565ed8a0c396df825c5959160b219208267d69b33ee262cd2581",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_3_completion.json": "cad726c51f23397c4749b4a1f843594044603f10d3d7252748293f46925320a9",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/block_3_telemetry.json": "b8a7f1f32af9711a3642a4b0b783fed3c2cb67f21b5774f4bcea8b16b9032754",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/results/mlsys2027_ablation_v1/regional_cost_20260909T025538Z_20682b18/manifest.json": "c0b7cc2638b76de78aad4d42bc8e9d329257d9605b8cc390873b4e011631da76"
+  },
+  "output_sha256": {
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/paper/mlsys2027/generated/regional_cost_rows.tex": "13558e8f92df158d9d2cd8fb297bdd61ad9831b934790ae60aaecb7984a17c68",
+    "/mnt/c/Users/noorg/Ahmed/page_gauge_protocol_v2_rtx5090/paper/mlsys2027/generated/regional_cost_summary.tex": "3464827aa9656f82491f96c25290a9582c22b4fe215592c69c5a03b50ea8c39d"
+  },
+  "scope": "Fixed four-policy B4/C20480/D1536 optimized full-decoder pilots. One process per policy, fixed order, no comparative CI or policy promotion. TRAIN teacher forcing, not online serving. Excludes prefill, load, capture, restore and scrub; includes full decoder, append/finalize, planner, LM head and argmax."
+}

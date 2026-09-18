@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "experiment": "page_gauge_a100_cross_gpu_s4_a128_t768",
+  "hardware_contract": {
+    "gpu_name_contains": "A100",
+    "compute_capability": [8, 0],
+    "required_multiprocessor_count": 108,
+    "minimum_device_memory_gib": 38,
+    "mig_slices_accepted": false
+  },
+  "frozen_policy": {
+    "model": "mistralai/Mistral-7B-v0.3",
+    "model_revision": "caa1feb0e54d415e2df31207e5f4e273e33509b1",
+    "batch_size": 4,
+    "context_tokens": 20480,
+    "decode_tokens": 1536,
+    "exact_prefix_pages": 4,
+    "exact_static_suffix_pages": 128,
+    "exact_recent_tail_tokens": 768,
+    "attention": "flashinfer_merge",
+    "old_value_scale_placement": "probability",
+    "quantizer_or_attention_math_changed_for_a100": false
+  },
+  "architecture_adaptation": {
+    "baseline_split_pages": 256,
+    "candidate_split_pages": 200,
+    "reason": "A100 has 108 SMs. With Hkv=8 and B=4, FlashInfer permits six chunks per request. The endpoint old segment has 1196 pages, so ceil(1196/6)=200 is the minimum safe fixed split and uses all six chunks; split128 is invalid and split256 leaves one scheduling slot unused.",
+    "parameter_sweep_used": false
+  },
+  "acceptance": {
+    "fresh_process_blocks": 8,
+    "schedule": "ABBA then BAAB",
+    "bootstrap_samples": 50000,
+    "primary_metric": "cache-neutral end-to-end wall latency",
+    "point_speedup_strictly_greater_than": 1.1,
+    "hierarchical_95_percent_lower_bound_strictly_greater_than": 1.1
+  },
+  "official_sources": {
+    "colab_gpu_availability": "https://research.google.com/colaboratory/faq.html",
+    "a100_architecture": "https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/",
+    "ampere_cuda_compatibility": "https://docs.nvidia.com/cuda/ampere-compatibility-guide/index.html",
+    "flashinfer_installation": "https://docs.flashinfer.ai/installation.html"
+  }
+}

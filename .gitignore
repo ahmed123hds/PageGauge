@@ -1,0 +1,48 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Build artifacts & temporary binaries
+build/
+*.zip
+*.tar.gz
+*.tgz
+.ninja_deps
+.ninja_log
+
+# OS & Editor junk
+.DS_Store
+__MACOSX/
+._*
+.!*
+*~
+
+# Multi-GB raw profiling dumps, logs, and temp directories
+results/
+tmp/
+release/
+data/
+_context_sweep*
+*.log
+_a100_sm80_compile_audit/
+_a100_sm80_cap2_compile_audit/
+backup_before_quality_outlier_v1/
+artifacts/
+output/pdf/
+
+# LaTeX build intermediates (keep sources, figures, generated tables, and main.pdf)
+paper/**/build/
+paper/**/*.aux
+paper/**/*.log
+paper/**/*.out
+paper/**/*.toc
+paper/**/*.bbl
+paper/**/*.blg
+paper/**/*.synctex.gz
+paper/**/*.bak
+paper/**/*.pre_serving_backup
